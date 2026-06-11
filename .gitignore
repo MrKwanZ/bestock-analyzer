@@ -1,0 +1,35 @@
+# LangGraph CLI local API state and local development builds
+.langgraph_api/
+.langgraph/
+
+# LangSmith / LangChain local tracing and cache exports
+.langchain_cache/
+.langsmith_cache/
+
+# Environment Variables & Secrets
+.env
+
+# Generated output artefacts (charts, reports)
+outputs/charts/*
+outputs/reports/*
+!outputs/charts/.gitkeep
+!outputs/reports/.gitkeep
+
+# Python Virtual Environments & Dependencies
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyzwz
+*.pyzwzw
+
+# IDE configuration files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

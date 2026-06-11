@@ -1,0 +1,16 @@
+[
+  {
+    "symbol": "NVDA",
+    "name": "NVIDIA Corporation",
+    "price": 1250.75,
+    "change": 87.50,
+    "change_pct": 7.52
+  },
+  {
+    "symbol": "SMCI",
+    "name": "Super Micro Computer Inc.",
+    "price": 945.30,
+    "change": 55.10,
+    "change_pct": 6.19
+  }
+]
