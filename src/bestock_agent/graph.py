@@ -128,10 +128,26 @@ def _route_send_email(state: BestockState) -> str:
 
 
 def _route_error_handler(state: BestockState) -> str:
-    """Route after error_handler: retry if budget remains, otherwise finish."""
-    if state["retry_count"] < _MAX_RETRIES and state["errors"] and state["errors"][-1].recoverable:
-        failed_node = state["errors"][-1].node
-        return failed_node
+    """Route after error_handler: retry the failing node if budget remains.
+
+    After error_handler runs it either:
+    - Bumped retry_count and possibly switched provider → re-route to the node
+      that originated the error so it re-runs with the new provider.
+    - Saturated retry_count → route to END with failure RunSummary.
+    """
+    from bestock_agent.services.fallback import failing_node
+
+    if state["retry_count"] >= _MAX_RETRIES:
+        return END
+
+    target = failing_node(state)
+    if target and target in (
+        _NODE_FETCH_TOP_GAINER,
+        _NODE_FETCH_PRICE_HISTORY,
+        _NODE_ANALYZE_TREND,
+        _NODE_SEND_EMAIL,
+    ):
+        return target
     return END
 
 
