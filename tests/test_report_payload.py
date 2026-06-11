@@ -4,7 +4,11 @@ from datetime import date
 
 import pytest
 
-from bestock_agent.chains.report_chain import ReportOutput, _template_report
+from bestock_agent.chains.report_chain import (
+    ReportOutput,
+    _generate_suggestion,
+    _template_report,
+)
 from bestock_agent.schemas import PriceBar, TopGainer
 from bestock_agent.services.analysis import build_trend_analysis
 
@@ -60,3 +64,24 @@ def test_template_report_subject_format():
     symbol = _gainer().symbol
     expected_subject = f"Analysis Report on {symbol}"
     assert expected_subject == f"Analysis Report on NVDA"
+
+
+def test_template_report_includes_greeting_and_sign_off():
+    result = _template_report(_gainer(), _analysis(), "2026-06-11")
+    assert "Greetings!" in result.text_body
+    assert "Regards," in result.text_body
+    assert "BeStock Agent" in result.text_body
+    assert "Greetings!" in result.html_body
+    assert "Regards,<br>BeStock Agent" in result.html_body
+
+
+def test_template_report_includes_suggestion_section():
+    result = _template_report(_gainer(), _analysis(), "2026-06-11")
+    assert "Suggestion" in result.text_body
+    assert "Recommendation" in result.text_body
+    assert "Suggestion" in result.html_body
+
+
+def test_generate_suggestion_uptrend_recommends_buy():
+    action, _ = _generate_suggestion(_analysis(), None, None)
+    assert action == "Buy"

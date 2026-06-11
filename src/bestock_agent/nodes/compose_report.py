@@ -31,6 +31,9 @@ async def compose_report(state: BestockState) -> dict:
     analysis_date = state["target_date"]
     chart_paths = [a.path for a in state["chart_artifacts"]]
 
+    sentiment = state.get("sentiment_result")
+    comparison = state.get("index_comparison")
+
     try:
         report = run_report_chain(
             gainer=gainer,
@@ -38,6 +41,8 @@ async def compose_report(state: BestockState) -> dict:
             analysis_date=analysis_date,
             openai_model=settings.openai_model,
             openai_api_key=settings.openai_api_key,
+            sentiment=sentiment,
+            comparison=comparison,
         )
     except Exception as exc:
         error = AgentError(

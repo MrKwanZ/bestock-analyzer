@@ -84,6 +84,32 @@ async def run_agent(
             print(f"  Volatility (Std Dev) : ±{analysis.volatility:.2f}%")
         print(f"\n  {analysis.summary}")
 
+    # ── Sentiment (advanced only) ─────────────────────────────────────────────
+    sentiment = final.get("sentiment_result")
+    if sentiment and advanced:
+        _print_header("Market Sentiment")
+        score_sign = "+" if sentiment.score >= 0 else ""
+        print(f"  Label      : {sentiment.label.value.capitalize()}")
+        print(f"  Score      : {score_sign}{sentiment.score:.2f}  (confidence {sentiment.confidence:.0%})")
+        print(f"  Summary    : {sentiment.summary}")
+        drivers = [d for d in sentiment.drivers]
+        if drivers:
+            print("  Drivers    :")
+            for d in drivers[:4]:
+                bullet = "  ↑" if d.sentiment.value == "positive" else "  ↓"
+                print(f"    {bullet} {d.text}")
+
+    # ── Index comparison (advanced only) ─────────────────────────────────────
+    comparison = final.get("index_comparison")
+    if comparison and advanced:
+        _print_header("S&P 500 Comparison")
+        stock_period = comparison.sp500.period_change_pct + comparison.relative_perf_vs_sp500
+        beta_str = f"{comparison.beta:.2f}" if comparison.beta is not None else "N/A"
+        print(f"  {comparison.stock_symbol:<8} period return : {_pct_color(stock_period)}")
+        print(f"  S&P 500  period return : {_pct_color(comparison.sp500.period_change_pct)}")
+        print(f"  Relative performance  : {_pct_color(comparison.relative_perf_vs_sp500)}")
+        print(f"  Beta                  : {beta_str}")
+
     # ── Charts ────────────────────────────────────────────────────────────────
     charts = final.get("chart_artifacts", [])
     if charts:

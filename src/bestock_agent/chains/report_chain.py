@@ -10,8 +10,19 @@ from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from bestock_agent.schemas import TrendAnalysis, TopGainer
+from bestock_agent.schemas import (
+    IndexComparison,
+    SentimentLabel,
+    SentimentResult,
+    TrendAnalysis,
+    TrendLabel,
+    TopGainer,
+)
 from bestock_agent.services.analysis import format_price_table
+
+_GREETING = "Greetings!"
+_SIGN_OFF_TEXT = "Regards,\nBeStock Agent"
+_SIGN_OFF_HTML = "Regards,<br>BeStock Agent"
 
 
 class ReportOutput(BaseModel):
@@ -23,11 +34,16 @@ class ReportOutput(BaseModel):
 
 _SYSTEM = """\
 You are a professional financial analyst assistant. Generate a concise, well-formatted stock analysis email report.
-Keep the language clear, factual, and professional. Do not provide explicit buy/sell financial advice.
+Keep the language clear, factual, and professional. Frame the suggestion as informational guidance, not personal financial advice.
 """
 
 _HUMAN = """\
 Prepare an email body for the following NASDAQ stock analysis.
+
+Begin the email with "Greetings!" and end with:
+Regards,
+BeStock Agent
+(put a line break between "Regards," and "BeStock Agent")
 
 ## Stock
 - Name: {name}
@@ -46,10 +62,13 @@ Prepare an email body for the following NASDAQ stock analysis.
 
 ## Trend Explanation
 {trend_summary}
-
+{sentiment_section}{index_section}
+## Suggestion
+{suggestion_section}
 ---
 Return both an HTML version (with subtle inline styling, a readable table, and section headers)
 and a plain-text version. The plain-text version should be fully readable without HTML rendering.
+Include the Suggestion section at the end of the analysis, before the sign-off.
 """
 
 
@@ -62,10 +81,168 @@ def _build_chain(model: str, api_key: str):
     return prompt | structured_llm
 
 
+# ── Section helpers ───────────────────────────────────────────────────────────
+
+
+def _sentiment_section_text(sentiment: SentimentResult | None) -> str:
+    if sentiment is None or not sentiment.summary:
+        return ""
+    label_upper = sentiment.label.value.upper()
+    drivers = [d.text for d in sentiment.drivers]
+    driver_str = ""
+    if drivers:
+        bullet_items = "\n".join(f"  • {d}" for d in drivers[:4])
+        driver_str = f"\nKey Drivers:\n{bullet_items}"
+    return (
+        f"\n## Market Sentiment\n"
+        f"- Sentiment: {label_upper}  (score {sentiment.score:+.2f}, confidence {sentiment.confidence:.0%})\n"
+        f"- Summary: {sentiment.summary}{driver_str}\n"
+    )
+
+
+def _index_section_text(comparison: IndexComparison | None) -> str:
+    if comparison is None:
+        return ""
+    sp = comparison.sp500
+    beta_str = f"{comparison.beta:.2f}" if comparison.beta is not None else "N/A"
+    stock_period = sp.period_change_pct + comparison.relative_perf_vs_sp500
+    return (
+        f"\n## S&P 500 Comparison\n"
+        f"- {comparison.stock_symbol} period change: {stock_period:+.2f}%\n"
+        f"- S&P 500 period change: {sp.period_change_pct:+.2f}%\n"
+        f"- Relative performance vs S&P 500: {comparison.relative_perf_vs_sp500:+.2f}%\n"
+        f"- Beta: {beta_str}\n"
+    )
+
+
+def _generate_suggestion(
+    analysis: TrendAnalysis,
+    sentiment: SentimentResult | None,
+    comparison: IndexComparison | None,
+) -> tuple[str, str]:
+    """Return (action, rationale) where action is Buy, Hold, or Sell."""
+    score = 0.0
+    reasons: list[str] = []
+
+    trend = analysis.trend_label
+    if trend == TrendLabel.UPTREND:
+        score += 2
+        reasons.append("the stock is in an uptrend")
+    elif trend == TrendLabel.DOWNTREND:
+        score -= 2
+        reasons.append("the stock is in a downtrend")
+    elif trend == TrendLabel.PULLBACK:
+        score -= 0.5
+        reasons.append("the stock is showing a pullback")
+    else:
+        reasons.append("price action is relatively sideways")
+
+    if analysis.avg_change > 0.5:
+        score += 1
+        reasons.append(f"average daily change is positive ({analysis.avg_change:+.2f}%)")
+    elif analysis.avg_change < -0.5:
+        score -= 1
+        reasons.append(f"average daily change is negative ({analysis.avg_change:+.2f}%)")
+
+    if sentiment is not None and sentiment.confidence > 0:
+        if sentiment.label == SentimentLabel.POSITIVE:
+            score += 1.5
+            reasons.append("market sentiment is positive")
+        elif sentiment.label == SentimentLabel.NEGATIVE:
+            score -= 1.5
+            reasons.append("market sentiment is negative")
+        else:
+            reasons.append("market sentiment is neutral")
+
+    if comparison is not None:
+        rel = comparison.relative_perf_vs_sp500
+        if rel > 1.0:
+            score += 1
+            reasons.append(f"it is outperforming the S&P 500 ({rel:+.2f}%)")
+        elif rel < -1.0:
+            score -= 1
+            reasons.append(f"it is underperforming the S&P 500 ({rel:+.2f}%)")
+
+    if analysis.volatility is not None and analysis.volatility > 3.0:
+        score -= 0.5
+        reasons.append(f"elevated volatility (±{analysis.volatility:.2f}%) suggests added caution")
+
+    if score >= 2:
+        action = "Buy"
+    elif score <= -2:
+        action = "Sell"
+    else:
+        action = "Hold"
+
+    joined = ", ".join(reasons[:4]) if reasons else "the available signals are mixed"
+    rationale = (
+        f"Based on {joined}, a **{action}** stance is suggested for consideration. "
+        "This is informational guidance only and not personal financial advice."
+    )
+    return action, rationale
+
+
+def _suggestion_section_text(action: str, rationale: str) -> str:
+    return f"\n## Suggestion\n- Recommendation: {action}\n- Rationale: {rationale}\n"
+
+
+def _suggestion_section_html(action: str, rationale: str) -> str:
+    action_color = (
+        "#3fb950" if action == "Buy"
+        else "#f85149" if action == "Sell"
+        else "#d29922"
+    )
+    plain_rationale = rationale.replace("**", "")
+    return (
+        f"  <h2 style='color:#58a6ff;font-size:16px'>Suggestion</h2>\n"
+        f"  <table style='border-collapse:collapse;margin-bottom:16px'>\n"
+        f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>Recommendation</td>"
+        f"<td style='color:{action_color}'><strong>{action}</strong></td></tr>\n"
+        f"  </table>\n"
+        f"  <p style='color:#8b949e;font-size:13px'>{plain_rationale}</p>\n"
+    )
+
+
+def _finalize_email_bodies(html_body: str, text_body: str) -> ReportOutput:
+    """Ensure greeting and sign-off are present in both HTML and plain-text bodies."""
+    if _GREETING not in text_body:
+        text_body = f"{_GREETING}\n\n{text_body.lstrip()}"
+    if _SIGN_OFF_TEXT not in text_body:
+        text_body = f"{text_body.rstrip()}\n\n{_SIGN_OFF_TEXT}\n"
+
+    if _GREETING not in html_body:
+        html_body = html_body.replace(
+            "<body",
+            f"<body",
+            1,
+        )
+        # Insert greeting right after opening <body ...> tag
+        body_end = html_body.index(">", html_body.index("<body")) + 1
+        html_body = (
+            html_body[:body_end]
+            + f"\n  <p style='color:#c9d1d9;font-size:14px;margin-bottom:16px'>{_GREETING}</p>"
+            + html_body[body_end:]
+        )
+
+    if "BeStock Agent" not in html_body:
+        html_body = html_body.replace(
+            "</body>",
+            f"  <p style='color:#c9d1d9;font-size:14px;margin-top:24px'>{_SIGN_OFF_HTML}</p>\n</body>",
+        )
+
+    return ReportOutput(html_body=html_body, text_body=text_body)
+
+
 # ── Template fallback ─────────────────────────────────────────────────────────
 
 
-def _template_report(gainer: TopGainer, analysis: TrendAnalysis, analysis_date: str) -> ReportOutput:
+def _template_report(
+    gainer: TopGainer,
+    analysis: TrendAnalysis,
+    analysis_date: str,
+    sentiment: SentimentResult | None = None,
+    comparison: IndexComparison | None = None,
+) -> ReportOutput:
     """Pure-Python fallback used when the LLM chain is unavailable."""
     table = format_price_table(analysis.bars, analysis.daily_changes)
     vol_str = f"±{analysis.volatility:.2f}%" if analysis.volatility else "N/A"
@@ -74,7 +251,37 @@ def _template_report(gainer: TopGainer, analysis: TrendAnalysis, analysis_date: 
         analysis.trend_label.value, ""
     )
 
+    sentiment_block = ""
+    if sentiment is not None and sentiment.summary:
+        label_cap = sentiment.label.value.capitalize()
+        sentiment_block = (
+            f"\nSentiment\n{'-' * 40}\n"
+            f"Label      : {label_cap}\n"
+            f"Score      : {sentiment.score:+.2f}  (confidence {sentiment.confidence:.0%})\n"
+            f"Summary    : {sentiment.summary}\n"
+        )
+
+    index_block = ""
+    if comparison is not None:
+        beta_str = f"{comparison.beta:.2f}" if comparison.beta is not None else "N/A"
+        index_block = (
+            f"\nS&P 500 Comparison\n{'-' * 40}\n"
+            f"{analysis.symbol} period return : {comparison.sp500.period_change_pct + comparison.relative_perf_vs_sp500:+.2f}%\n"
+            f"S&P 500 period return         : {comparison.sp500.period_change_pct:+.2f}%\n"
+            f"Relative performance          : {comparison.relative_perf_vs_sp500:+.2f}%\n"
+            f"Beta                          : {beta_str}\n"
+        )
+
+    action, rationale = _generate_suggestion(analysis, sentiment, comparison)
+    suggestion_block = (
+        f"\nSuggestion\n{'-' * 40}\n"
+        f"Recommendation : {action}\n"
+        f"Rationale      : {rationale.replace('**', '')}\n"
+    )
+
     text_body = f"""\
+{_GREETING}
+
 NASDAQ Stock Analysis Report
 {'=' * 40}
 Company : {gainer.name} ({gainer.symbol})
@@ -93,9 +300,8 @@ Trend                : {trend_emoji} {analysis.trend_label.value.title()}
 Daily Volatility     : {vol_str}
 
 {analysis.summary}
-
----
-This report was generated automatically by the NASDAQ BeStock Analyzer.
+{sentiment_block}{index_block}{suggestion_block}
+{_SIGN_OFF_TEXT}
 """
 
     html_rows = ""
@@ -111,10 +317,59 @@ This report was generated automatically by the NASDAQ BeStock Analyzer.
             f"</tr>"
         )
 
+    # ── Optional Phase 5 HTML sections ───────────────────────────────────────
+    html_sentiment_section = ""
+    if sentiment is not None and sentiment.summary:
+        sent_color = (
+            "#3fb950" if sentiment.score > 0.1
+            else "#f85149" if sentiment.score < -0.1
+            else "#d29922"
+        )
+        sent_label = sentiment.label.value.capitalize()
+        driver_rows = ""
+        for d in sentiment.drivers[:4]:
+            dir_color = "#3fb950" if d.sentiment.value == "positive" else "#f85149"
+            driver_rows += (
+                f"<li style='margin:3px 0;color:{dir_color}'>{d.text}</li>"
+            )
+        driver_html = f"<ul style='margin:6px 0 0 16px;padding:0'>{driver_rows}</ul>" if driver_rows else ""
+        html_sentiment_section = (
+            f"  <h2 style='color:#58a6ff;font-size:16px'>Market Sentiment</h2>\n"
+            f"  <table style='border-collapse:collapse;margin-bottom:8px'>\n"
+            f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>Label</td>"
+            f"<td style='color:{sent_color}'><strong>{sent_label}</strong></td></tr>\n"
+            f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>Score</td>"
+            f"<td>{sentiment.score:+.2f} (confidence {sentiment.confidence:.0%})</td></tr>\n"
+            f"  </table>\n"
+            f"  <p style='color:#8b949e;font-size:13px'>{sentiment.summary}</p>\n"
+            f"  {driver_html}\n"
+        )
+
+    html_index_section = ""
+    if comparison is not None:
+        beta_str = f"{comparison.beta:.2f}" if comparison.beta is not None else "N/A"
+        rel_color = "#3fb950" if comparison.relative_perf_vs_sp500 >= 0 else "#f85149"
+        stock_period = comparison.sp500.period_change_pct + comparison.relative_perf_vs_sp500
+        html_index_section = (
+            f"  <h2 style='color:#58a6ff;font-size:16px'>S&amp;P 500 Comparison</h2>\n"
+            f"  <table style='border-collapse:collapse;margin-bottom:16px'>\n"
+            f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>{comparison.stock_symbol} Period Return</td>"
+            f"<td>{stock_period:+.2f}%</td></tr>\n"
+            f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>S&amp;P 500 Period Return</td>"
+            f"<td>{comparison.sp500.period_change_pct:+.2f}%</td></tr>\n"
+            f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>Relative Performance</td>"
+            f"<td style='color:{rel_color}'>{comparison.relative_perf_vs_sp500:+.2f}%</td></tr>\n"
+            f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>Beta</td><td>{beta_str}</td></tr>\n"
+            f"  </table>\n"
+        )
+
+    html_suggestion_section = _suggestion_section_html(action, rationale)
+
     html_body = f"""\
 <!DOCTYPE html>
 <html>
 <body style="font-family:Arial,sans-serif;background:#0d1117;color:#c9d1d9;padding:24px;max-width:680px;margin:auto">
+  <p style="color:#c9d1d9;font-size:14px;margin-bottom:16px">{_GREETING}</p>
   <h1 style="color:#58a6ff;font-size:20px">NASDAQ Stock Analysis Report</h1>
   <table style="border-collapse:collapse;margin-bottom:16px">
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Company</td><td><strong>{gainer.name}</strong> ({gainer.symbol})</td></tr>
@@ -143,8 +398,7 @@ This report was generated automatically by the NASDAQ BeStock Analyzer.
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Volatility</td><td>{vol_str}</td></tr>
   </table>
   <p style="color:#8b949e;font-size:13px">{analysis.summary}</p>
-  <hr style="border-color:#30363d"/>
-  <p style="color:#6e7681;font-size:11px">Generated by NASDAQ BeStock Analyzer</p>
+{html_sentiment_section}{html_index_section}{html_suggestion_section}  <p style="color:#c9d1d9;font-size:14px;margin-top:24px">{_SIGN_OFF_HTML}</p>
 </body>
 </html>"""
 
@@ -160,9 +414,17 @@ def compose_report(
     analysis_date: str,
     openai_model: str,
     openai_api_key: str,
+    sentiment: SentimentResult | None = None,
+    comparison: IndexComparison | None = None,
 ) -> ReportOutput:
-    """Compose the report using the LLM chain with a template fallback."""
-    # Skip LLM if the API key is the placeholder from .env
+    """Compose the report using the LLM chain with a template fallback.
+
+    Phase 5: optional *sentiment* and *comparison* data are included when
+    advanced analysis is enabled.
+    """
+    action, rationale = _generate_suggestion(analysis, sentiment, comparison)
+    suggestion_section = _suggestion_section_text(action, rationale)
+
     key_is_placeholder = not openai_api_key or openai_api_key.startswith("<")
     if not key_is_placeholder:
         try:
@@ -180,9 +442,12 @@ def compose_report(
                 "trend_label": analysis.trend_label.value.title(),
                 "volatility": vol_str,
                 "trend_summary": analysis.summary,
+                "sentiment_section": _sentiment_section_text(sentiment),
+                "index_section": _index_section_text(comparison),
+                "suggestion_section": suggestion_section,
             })
-            return result
+            return _finalize_email_bodies(result.html_body, result.text_body)
         except Exception:
             pass  # Fall through to template
 
-    return _template_report(gainer, analysis, analysis_date)
+    return _template_report(gainer, analysis, analysis_date, sentiment, comparison)
