@@ -112,13 +112,11 @@ class IndexData(BaseModel):
 
 
 class IndexComparison(BaseModel):
-    """Performance of the selected stock relative to market indices."""
+    """Performance of the selected stock relative to the S&P 500 (^GSPC)."""
 
     stock_symbol: str
     sp500: IndexData
-    dow_jones: IndexData
     relative_perf_vs_sp500: float
-    relative_perf_vs_dow: float
     beta: float | None = None
     excess_return: float | None = None
 

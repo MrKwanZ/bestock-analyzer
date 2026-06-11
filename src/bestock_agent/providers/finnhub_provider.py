@@ -80,8 +80,10 @@ class FinnhubProvider(FinancialProvider):
         )
 
     async def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
-        # Request extra calendar days to account for weekends/holidays
-        to_dt = date.today()
+        # Use tomorrow as the upper bound so the most recently completed NYSE
+        # session is included when the caller is in a timezone ahead of UTC
+        # (e.g. UTC+8 midnight = 16:00 UTC, before NYSE's 20:00 UTC close).
+        to_dt = date.today() + timedelta(days=1)
         from_dt = to_dt - timedelta(days=lookback_days * 3)
         to_ts = int(to_dt.strftime("%s") if hasattr(to_dt, "strftime") else
                     (to_dt - date(1970, 1, 1)).total_seconds())

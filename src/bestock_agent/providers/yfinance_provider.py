@@ -8,7 +8,7 @@ MultiIndex column structure issues from the batch yf.download API.
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 
 import yfinance as yf
 
@@ -23,20 +23,51 @@ from bestock_agent.schemas import PriceBar, TopGainer
 _SEMAPHORE_LIMIT = 8
 
 
+def _latest_daily_bar(ticker: yf.Ticker) -> tuple[float, date] | None:
+    """Return (close_price, bar_date) for the most recent completed session.
+
+    Yahoo Finance's end-of-day bars can lag up to ~24 h after market close.
+    We always cross-check with ``period="1d", interval="1d"`` which returns
+    the most recently settled daily candle independently of the batch history.
+    """
+    try:
+        h = ticker.history(period="1d", interval="1d", auto_adjust=True)
+        h = h.dropna(subset=["Close"])
+        if not h.empty:
+            return float(h["Close"].iloc[-1]), h.index[-1].date()
+    except Exception:
+        pass
+    return None
+
+
 def _single_quote_sync(symbol: str) -> dict | None:
-    """Return {symbol, close, prev_close, pct_change} for the latest trading day."""
+    """Return {symbol, close, prev_close, pct_change} for the latest trading day.
+
+    Combines two yfinance calls to get the freshest possible data:
+      1. ``period="1d", interval="1d"`` → most recent completed session close
+      2. start/end history             → the session before that (prev_close)
+    """
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="5d", auto_adjust=True)
-        if hist is None or hist.empty:
+
+        # Step 1: most recent completed session
+        latest = _latest_daily_bar(ticker)
+        if latest is None:
             return None
+        close_today, today_date = latest
+
+        # Step 2: history up to (but not including) today_date for prev_close
+        end_date = today_date                          # exclusive upper bound
+        start_date = end_date - timedelta(days=10)    # 10 cal days → ≥ 5 trading days
+        hist = ticker.history(start=str(start_date), end=str(end_date), auto_adjust=True)
         hist = hist.dropna(subset=["Close"])
-        if len(hist) < 2:
+        if hist.empty:
             return None
-        close_today = float(hist["Close"].iloc[-1])
-        close_prev = float(hist["Close"].iloc[-2])
+
+        close_prev = float(hist["Close"].iloc[-1])
         if close_prev == 0:
             return None
+
         pct = (close_today - close_prev) / close_prev * 100.0
         return {
             "symbol": symbol,
@@ -83,15 +114,43 @@ async def _fetch_top_gainer_async() -> TopGainer:
 
 
 def _fetch_price_history_sync(symbol: str, lookback_days: int) -> list[PriceBar]:
-    # Request 3× calendar days to cover weekends and holidays
-    period = f"{lookback_days * 3}d"
+    """Fetch the last *lookback_days* completed daily bars.
+
+    Strategy:
+      1. Query the standard end-of-day history with an explicit date range
+         (``end = today + 1 day``) and drop any NaN rows — this covers the
+         common case.
+      2. Cross-check with ``period="1d", interval="1d"`` to detect sessions
+         that Yahoo Finance has finalised but whose daily bar is not yet in
+         the batch history endpoint (Yahoo's ~12–24 h data lag).  If a newer
+         bar is found it is appended before the tail-slice.
+    """
+    import pandas as pd
+
     ticker = yf.Ticker(symbol)
-    hist = ticker.history(period=period, auto_adjust=True)
+
+    # ── Step 1: batch history ─────────────────────────────────────────────────
+    end_date = date.today() + timedelta(days=1)
+    start_date = end_date - timedelta(days=lookback_days * 3)
+    hist = ticker.history(start=str(start_date), end=str(end_date), auto_adjust=True)
 
     if hist is None or hist.empty:
         raise FinancialProviderError(f"yfinance returned no history for {symbol}")
 
     hist = hist.dropna(subset=["Close"])
+
+    # ── Step 2: supplement with most recent session if history lags ───────────
+    try:
+        recent = ticker.history(period="1d", interval="1d", auto_adjust=True)
+        recent = recent.dropna(subset=["Close"])
+        if not recent.empty and not hist.empty:
+            recent_date = recent.index[-1].date()
+            hist_last_date = hist.index[-1].date()
+            if recent_date > hist_last_date:
+                hist = pd.concat([hist, recent.tail(1)])
+    except Exception:
+        pass  # supplemental step is best-effort
+
     hist = hist.tail(lookback_days)
 
     bars: list[PriceBar] = []
