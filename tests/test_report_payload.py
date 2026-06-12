@@ -60,10 +60,10 @@ def test_template_report_html_is_valid_structure():
 
 
 def test_template_report_subject_format():
-    """The compose_report node should set subject to 'Analysis Report on SYMBOL'."""
+    """The compose_report node should set subject to 'BeStock's Top Performing NASDAQ Stock Analysis Report on SYMBOL'."""
     symbol = _gainer().symbol
-    expected_subject = f"Analysis Report on {symbol}"
-    assert expected_subject == f"Analysis Report on NVDA"
+    expected_subject = f"BeStock's Top Performing NASDAQ Stock Analysis Report on {symbol}"
+    assert expected_subject == f"BeStock's Top Performing NASDAQ Stock Analysis Report on NVDA"
 
 
 def test_template_report_includes_greeting_and_sign_off():
@@ -73,6 +73,21 @@ def test_template_report_includes_greeting_and_sign_off():
     assert "BeStock Agent" in result.text_body
     assert "Greetings!" in result.html_body
     assert "Regards,<br>BeStock Agent" in result.html_body
+
+
+def test_template_report_opening_includes_name_symbol_and_change():
+    gainer = _gainer()
+    result = _template_report(gainer, _analysis(), "2026-06-11")
+    assert gainer.name in result.text_body
+    assert gainer.symbol in result.text_body
+    assert f"{gainer.change_pct:+.2f}%" in result.text_body
+    assert gainer.name in result.html_body
+    assert gainer.symbol in result.html_body
+    assert f"{gainer.change_pct:+.2f}%" in result.html_body
+    # Opening should appear before the detailed report section
+    opening_pos = result.text_body.index(gainer.name)
+    report_pos = result.text_body.index("Please find below the Analysis Report")
+    assert opening_pos < report_pos
 
 
 def test_template_report_includes_suggestion_section():

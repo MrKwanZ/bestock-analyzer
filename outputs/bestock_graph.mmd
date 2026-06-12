@@ -1,0 +1,39 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	fetch_top_gainer(fetch_top_gainer)
+	fetch_price_history(fetch_price_history)
+	analyze_trend(analyze_trend)
+	fetch_news_and_sentiment(fetch_news_and_sentiment)
+	compare_with_indices(compare_with_indices)
+	build_charts(build_charts)
+	compose_report(compose_report)
+	send_email(send_email)
+	error_handler(error_handler)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> fetch_top_gainer;
+	analyze_trend -.-> build_charts;
+	analyze_trend -.-> error_handler;
+	analyze_trend -.-> fetch_news_and_sentiment;
+	build_charts --> compose_report;
+	compare_with_indices --> build_charts;
+	compose_report --> send_email;
+	error_handler -.-> __end__;
+	error_handler -.-> analyze_trend;
+	error_handler -.-> fetch_price_history;
+	error_handler -.-> fetch_top_gainer;
+	error_handler -.-> send_email;
+	fetch_news_and_sentiment -.-> compare_with_indices;
+	fetch_price_history -.-> analyze_trend;
+	fetch_price_history -.-> error_handler;
+	fetch_top_gainer -.-> error_handler;
+	fetch_top_gainer -.-> fetch_price_history;
+	send_email -.-> __end__;
+	send_email -.-> error_handler;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

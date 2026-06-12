@@ -106,6 +106,27 @@ label, p, span, h1, h2, h3, h4, h5, h6, li {
 }
 .dark .bs-run-error { background:#1a0000; color:#f87171; border-color:#991b1b; }
 
+.bs-email-pending {
+    border:1px solid #2563eb; border-radius:8px;
+    padding:12px 16px; display:flex; align-items:center; gap:10px;
+    color:#1d4ed8; font-size:14px; background:#eff6ff;
+}
+.dark .bs-email-pending { background:#0c1929; color:#60a5fa; border-color:#1d4ed8; }
+
+.bs-email-cancelled {
+    border:1px solid #6b7280; border-radius:8px;
+    padding:12px 16px; display:flex; align-items:center; gap:10px;
+    color:#4b5563; font-size:14px; background:#f9fafb;
+}
+.dark .bs-email-cancelled { background:#1f2937; color:#9ca3af; border-color:#4b5563; }
+
+/* Email confirmation panel */
+#bs-confirm-panel {
+    border:1px solid #e5e7eb; border-radius:10px;
+    padding:16px 20px; margin-top:8px; width:100%; box-sizing:border-box;
+}
+.dark #bs-confirm-panel { border-color:#374151; }
+
 /* "How to use" section padding */
 .bs-instructions { padding:5px; }
 """
@@ -121,12 +142,42 @@ def _section_label(title: str) -> str:
     return f"<p class='bs-section-label'>{title}</p>"
 
 
+def _email_status_html(
+    recipient: str,
+    *,
+    sent: bool = False,
+    pending: bool = False,
+    cancelled: bool = False,
+) -> str:
+    if cancelled:
+        return (
+            "<div class='bs-email-cancelled'><span>🚫</span>"
+            "<span>Email sending was cancelled.</span></div>"
+        )
+    if pending:
+        return (
+            f"<div class='bs-email-pending'><span>📧</span>"
+            f"<span>Report ready — confirm below to send to <strong>{recipient}</strong>.</span></div>"
+        )
+    if sent:
+        return (
+            f"<div class='bs-email-ok'><span>✅</span>"
+            f"<span>Analysis report sent to <strong>{recipient}</strong></span></div>"
+        )
+    return (
+        "<div class='bs-email-warn'><span>⚠️</span>"
+        "<span>Email could not be sent — check SMTP credentials in .env</span></div>"
+    )
+
+
 def _build_result_html(
     final: dict,
     show_advanced: bool,
     show_sentiment: bool,
     show_index: bool,
     show_volatility: bool,
+    *,
+    email_cancelled: bool = False,
 ) -> str:
     gainer    = final.get("top_gainer")
     analysis  = final.get("trend_analysis")
@@ -216,17 +267,18 @@ def _build_result_html(
     email_html = ""
     if run_summary:
         payload = final.get("email_payload")
-        addr    = payload.recipient if payload else "—"
-        if run_summary.email_sent:
-            email_html = (
-                f"<div class='bs-email-ok'><span>✅</span>"
-                f"<span>Analysis report sent to <strong>{addr}</strong></span></div>"
-            )
+        addr = (
+            str(payload.recipient) if payload
+            else run_summary.email_recipient or final.get("recipient_email", "—")
+        )
+        if email_cancelled:
+            email_html = _email_status_html(addr, cancelled=True)
+        elif run_summary.email_sent:
+            email_html = _email_status_html(addr, sent=True)
+        elif "awaiting email confirmation" in run_summary.message.lower():
+            email_html = _email_status_html(addr, pending=True)
         else:
-            email_html = (
-                "<div class='bs-email-warn'><span>⚠️</span>"
-                "<span>Email could not be sent — check SMTP credentials in .env</span></div>"
-            )
+            email_html = _email_status_html(addr, sent=False)
 
     return (
         "<div class='bs-results'>"
@@ -284,6 +336,44 @@ def _validate_inputs(
     return ""
 
 
+# ── UI context helpers ────────────────────────────────────────────────────────
+
+def _ui_context(
+    show_advanced: bool,
+    enable_sentiment: bool,
+    enable_index: bool,
+    enable_volatility: bool,
+) -> dict:
+    return {
+        "show_advanced": show_advanced,
+        "enable_sentiment": enable_sentiment,
+        "enable_index": enable_index,
+        "enable_volatility": enable_volatility,
+    }
+
+
+def _result_from_state(final: dict, ctx: dict, *, email_cancelled: bool = False) -> str:
+    return _build_result_html(
+        final,
+        ctx["show_advanced"],
+        ctx["enable_sentiment"],
+        ctx["enable_index"],
+        ctx["enable_volatility"],
+        email_cancelled=email_cancelled,
+    )
+
+
+def _hide_confirm() -> dict:
+    return gr.update(visible=False)
+
+
+def _show_confirm(recipient: str) -> tuple[dict, str]:
+    return (
+        gr.update(visible=True),
+        f"Send the analysis report to **{recipient}**?",
+    )
+
+
 # ── Agent runner ──────────────────────────────────────────────────────────────
 
 async def _run_analysis(
@@ -293,14 +383,14 @@ async def _run_analysis(
     enable_sentiment: bool,
     enable_index: bool,
     enable_volatility: bool,
-) -> AsyncGenerator[str, None]:
-    """Validate, show a static in-progress message, then return the final result."""
+) -> AsyncGenerator[tuple, None]:
+    """Validate, run analysis (without sending email), then prompt for confirmation."""
     err = _validate_inputs(recipient_input, show_advanced, lookback_raw)
     if err:
-        yield _error_html(err)
+        yield _error_html(err), _hide_confirm(), "", None, {}
         return
 
-    yield _PROGRESS_HTML
+    yield _PROGRESS_HTML, _hide_confirm(), "", None, {}
 
     settings  = get_settings()
     recipient = recipient_input.strip()
@@ -308,12 +398,13 @@ async def _run_analysis(
     if show_advanced:
         days, err = _validate_lookback(lookback_raw, required=True)
         if err:
-            yield _error_html(f"Invalid Lookback Days — {err}")
+            yield _error_html(f"Invalid Lookback Days — {err}"), _hide_confirm(), "", None, {}
             return
     else:
         days = settings.default_lookback_days
 
     advanced = show_advanced and (enable_sentiment or enable_index or enable_volatility)
+    ctx = _ui_context(show_advanced, enable_sentiment, enable_index, enable_volatility)
 
     state = initial_state(
         recipient_email=recipient,
@@ -321,6 +412,7 @@ async def _run_analysis(
         lookback_days=days,
         advanced_analysis_enabled=advanced,
         enable_volatility=show_advanced and enable_volatility,
+        skip_email=True,
     )
     state["active_financial_provider"] = "alphavantage"
 
@@ -333,11 +425,51 @@ async def _run_analysis(
         msg = errors[-1].message if errors else (
             run_summary.message if run_summary else "Unknown error"
         )
-        yield _error_html(msg)
+        yield _error_html(msg), _hide_confirm(), "", None, {}
         return
 
-    yield _build_result_html(
-        final, show_advanced, enable_sentiment, enable_index, enable_volatility
+    confirm_panel, confirm_text = _show_confirm(recipient)
+    yield (
+        _result_from_state(final, ctx),
+        confirm_panel,
+        confirm_text,
+        final,
+        ctx,
+    )
+
+
+async def _confirm_send_email(pending_state: dict | None, ctx: dict):
+    """User confirmed — send the prepared email."""
+    if not pending_state:
+        return _error_html("No analysis to send."), _hide_confirm(), "", None, {}
+
+    from bestock_agent.nodes.send_email import send_email
+
+    state = dict(pending_state)
+    state["skip_email"] = False
+    send_result = await send_email(state)
+    merged = {**pending_state, **send_result}
+
+    return (
+        _result_from_state(merged, ctx),
+        _hide_confirm(),
+        "",
+        None,
+        ctx,
+    )
+
+
+async def _cancel_send_email(pending_state: dict | None, ctx: dict):
+    """User declined — keep results but do not send email."""
+    if not pending_state:
+        return "", _hide_confirm(), "", None, {}
+
+    return (
+        _result_from_state(pending_state, ctx, email_cancelled=True),
+        _hide_confirm(),
+        "",
+        None,
+        ctx,
     )
 
 
@@ -355,6 +487,10 @@ def _reset(default_days: int):
         False,    # enable_volatility
         gr.update(visible=False),   # adv_panel
         "",       # status_panel
+        _hide_confirm(),  # confirm_panel
+        "",       # confirm_text
+        None,     # pending_state
+        {},       # ui_context
     )
 
 
@@ -366,7 +502,7 @@ def _instructions_md() -> str:
 
 **Email Recipient** — enter a valid email address to receive analysis report.
 
-**Start** — Start the agent to find today's top NASDAQ gainer, analyse its performance, and send a report to the above mailbox.
+**Start** — Start the agent to find today's top NASDAQ gainer and analyse its performance. When analysis completes, confirm with **Yes** or **No** whether to send the report to the email recipient.
 
 **Advanced Settings** — tick the checkbox to reveal extra options:
 - **Lookback Days** — required number of past trading days included in the price history ({_LOOKBACK_MIN} – {_LOOKBACK_MAX}).
@@ -436,6 +572,16 @@ def build_ui() -> gr.Blocks:
         with gr.Column(elem_id="bs-status-panel-wrapper"):
             status_panel = gr.HTML(value="", elem_id="bs-status-panel")
 
+        # ── Email confirmation (shown after analysis completes) ───────────────
+        pending_state = gr.State(None)
+        ui_context = gr.State({})
+
+        with gr.Column(visible=False, elem_id="bs-confirm-panel") as confirm_panel:
+            confirm_text = gr.Markdown("")
+            with gr.Row():
+                confirm_yes = gr.Button("Yes", variant="primary")
+                confirm_no = gr.Button("No", variant="secondary")
+
         # ── Instructions ──────────────────────────────────────────────────────
         with gr.Group(elem_classes="bs-instructions"):
             gr.Markdown(_instructions_md())
@@ -454,8 +600,39 @@ def build_ui() -> gr.Blocks:
                 recipient_input, adv_toggle, lookback_days,
                 enable_sentiment, enable_index, enable_volatility,
             ],
-            outputs=[status_panel],
+            outputs=[
+                status_panel,
+                confirm_panel,
+                confirm_text,
+                pending_state,
+                ui_context,
+            ],
             show_progress="hidden",
+        )
+
+        confirm_yes.click(
+            fn=_confirm_send_email,
+            inputs=[pending_state, ui_context],
+            outputs=[
+                status_panel,
+                confirm_panel,
+                confirm_text,
+                pending_state,
+                ui_context,
+            ],
+            show_progress="hidden",
+        )
+
+        confirm_no.click(
+            fn=_cancel_send_email,
+            inputs=[pending_state, ui_context],
+            outputs=[
+                status_panel,
+                confirm_panel,
+                confirm_text,
+                pending_state,
+                ui_context,
+            ],
         )
 
         reset_btn.click(
@@ -470,6 +647,10 @@ def build_ui() -> gr.Blocks:
                 enable_volatility,
                 adv_panel,
                 status_panel,
+                confirm_panel,
+                confirm_text,
+                pending_state,
+                ui_context,
             ],
         )
 

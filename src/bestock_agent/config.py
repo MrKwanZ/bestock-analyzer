@@ -26,7 +26,8 @@ class Settings(BaseSettings):
     # ── LangSmith ─────────────────────────────────────────────────────────────
     langsmith_tracing: bool = False
     langsmith_api_key: str = ""
-    langsmith_project: str = "bestock-agent"
+    langsmith_project: str = "bestock-analyzer"
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
 
     # ── Email ─────────────────────────────────────────────────────────────────
     smtp_host: str = "smtp.gmail.com"
@@ -38,12 +39,20 @@ class Settings(BaseSettings):
     # ── Agent defaults ─────────────────────────────────────────────────────────
     default_lookback_days: int = 5
     advanced_analysis_enabled: bool = False
+    rate_limit_backoff_seconds: int = 20
 
     @field_validator("default_lookback_days")
     @classmethod
     def _validate_lookback(cls, v: int) -> int:
         if not (3 <= v <= 30):
             raise ValueError("default_lookback_days must be between 3 and 30")
+        return v
+
+    @field_validator("rate_limit_backoff_seconds")
+    @classmethod
+    def _validate_rate_limit_backoff(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("rate_limit_backoff_seconds must be non-negative")
         return v
 
     @field_validator("smtp_port")

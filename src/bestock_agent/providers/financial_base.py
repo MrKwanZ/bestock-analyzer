@@ -14,12 +14,12 @@ class RateLimitError(FinancialProviderError):
 
 
 class FinancialProvider(ABC):
-    """Common interface for financial data providers (Finnhub, yfinance, …)."""
+    """Common interface for financial data providers (Alpha Vantage, yfinance, …)."""
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Human-readable provider identifier, e.g. ``"finnhub"``."""
+        """Human-readable provider identifier, e.g. ``"alphavantage"``."""
 
     @abstractmethod
     async def get_top_nasdaq_gainer(self) -> TopGainer:

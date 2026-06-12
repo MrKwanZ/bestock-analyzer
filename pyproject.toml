@@ -36,6 +36,7 @@ dependencies = [
 [project.scripts]
 bestock = "bestock_agent.cli:main"
 bestock-ui = "bestock_agent.app:main"
+bestock-graph = "bestock_agent.export_graph:main"
 
 [project.optional-dependencies]
 dev = [
