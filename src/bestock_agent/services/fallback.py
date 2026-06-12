@@ -11,7 +11,7 @@ from bestock_agent.schemas import AgentError, ErrorType
 from bestock_agent.state import BestockState
 
 # Ordered fallback chains — try each in sequence
-_FINANCIAL_CHAIN: list[str] = ["finnhub", "yfinance"]
+_FINANCIAL_CHAIN: list[str] = ["alphavantage", "yfinance"]
 _NEWS_CHAIN: list[str] = ["brave", "serpapi"]
 
 # Error types that are worth retrying (network / rate-limit / transient tool failures)
@@ -93,14 +93,25 @@ def decide_fallback(state: BestockState) -> dict:
 
 
 def is_retryable(state: BestockState, max_retries: int) -> bool:
-    """Return True if the graph should attempt another pass through the failing node."""
+    """Return True if the graph should attempt another pass through the failing node.
+
+    Switch-notes injected by error_handler itself (node == "error_handler") are
+    informational and must not count as a new retryable error — only errors from
+    actual pipeline nodes trigger retries.
+    """
     errors = state.get("errors", [])
     if not errors:
         return False
-    latest = errors[-1]
+    # Find the latest error that originated from a real pipeline node
+    pipeline_error = next(
+        (e for e in reversed(errors) if e.node != "error_handler"),
+        None,
+    )
+    if pipeline_error is None:
+        return False
     return (
-        latest.recoverable
-        and latest.error_type in _RETRYABLE_ERROR_TYPES
+        pipeline_error.recoverable
+        and pipeline_error.error_type in _RETRYABLE_ERROR_TYPES
         and state["retry_count"] < max_retries
     )
 

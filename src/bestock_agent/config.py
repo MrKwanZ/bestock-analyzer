@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
 
     # ── Financial data providers ───────────────────────────────────────────────
-    finnhub_api_key: str
+    alphavantage_api_key: str
     yfinance_enabled: bool = True
 
     # ── News providers ─────────────────────────────────────────────────────────

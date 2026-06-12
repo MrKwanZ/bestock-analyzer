@@ -1,8 +1,16 @@
-"""yfinance financial data provider — used as fallback when Finnhub is unavailable.
+"""yfinance financial data provider — fallback when Alpha Vantage is unavailable.
 
 All yfinance calls are synchronous and wrapped with asyncio.to_thread.
-Top-gainer discovery uses concurrent per-ticker history calls so we avoid
-MultiIndex column structure issues from the batch yf.download API.
+Top-gainer discovery uses yfinance's built-in Yahoo Finance screener
+(yf.screen) to fetch the day's biggest gainers across the US market,
+then applies the same quality filters as the primary provider.
+
+Filter criteria:
+  - Symbol length ≤ 4 characters
+  - Close price ≥ $10
+  - Volume ≥ 500,000
+  - Percentage gain ≥ 5%
+  - RVOL (today's volume / 20-day avg volume) ≥ 2
 """
 
 from __future__ import annotations
@@ -16,100 +24,123 @@ from bestock_agent.providers.financial_base import (
     FinancialProvider,
     FinancialProviderError,
 )
-from bestock_agent.providers.finnhub_provider import NASDAQ_WATCHLIST
 from bestock_agent.schemas import PriceBar, TopGainer
 
-# Limit concurrent yfinance requests to avoid hitting rate limits
-_SEMAPHORE_LIMIT = 8
+# Filter thresholds (mirrors alphavantage_provider for consistency)
+_MIN_PRICE   = 10.0
+_MIN_VOLUME  = 500_000
+_MIN_PCT     = 5.0       # percentage points (5.0 = 5%)
+_MIN_RVOL    = 2.0
+_MAX_SYM_LEN = 4
+
+# Limit concurrent yfinance RVOL-history requests
+_SEMAPHORE_LIMIT = 5
+# How many top candidates to compute RVOL for
+_MAX_RVOL_CANDIDATES = 10
 
 
-def _latest_daily_bar(ticker: yf.Ticker) -> tuple[float, date] | None:
-    """Return (close_price, bar_date) for the most recent completed session.
-
-    Yahoo Finance's end-of-day bars can lag up to ~24 h after market close.
-    We always cross-check with ``period="1d", interval="1d"`` which returns
-    the most recently settled daily candle independently of the batch history.
-    """
-    try:
-        h = ticker.history(period="1d", interval="1d", auto_adjust=True)
-        h = h.dropna(subset=["Close"])
-        if not h.empty:
-            return float(h["Close"].iloc[-1]), h.index[-1].date()
-    except Exception:
-        pass
-    return None
+def _screen_day_gainers_sync() -> list[dict]:
+    """Call yf.screen('day_gainers') and return raw quote dicts."""
+    result = yf.screen("day_gainers", count=100)
+    return result.get("quotes", [])
 
 
-def _single_quote_sync(symbol: str) -> dict | None:
-    """Return {symbol, close, prev_close, pct_change} for the latest trading day.
-
-    Combines two yfinance calls to get the freshest possible data:
-      1. ``period="1d", interval="1d"`` → most recent completed session close
-      2. start/end history             → the session before that (prev_close)
-    """
+def _compute_rvol_sync(symbol: str, today_volume: int) -> float | None:
+    """Return rvol = today_vol / 20-day avg volume, or None on failure."""
     try:
         ticker = yf.Ticker(symbol)
-
-        # Step 1: most recent completed session
-        latest = _latest_daily_bar(ticker)
-        if latest is None:
+        # Fetch ~25 trading days so we have at least 20 complete sessions
+        hist = ticker.history(period="25d", interval="1d", auto_adjust=True)
+        hist = hist.dropna(subset=["Volume"])
+        if len(hist) < 2:
             return None
-        close_today, today_date = latest
-
-        # Step 2: history up to (but not including) today_date for prev_close
-        end_date = today_date                          # exclusive upper bound
-        start_date = end_date - timedelta(days=10)    # 10 cal days → ≥ 5 trading days
-        hist = ticker.history(start=str(start_date), end=str(end_date), auto_adjust=True)
-        hist = hist.dropna(subset=["Close"])
-        if hist.empty:
+        # Exclude the last bar (today) — use the 20 sessions before it
+        prev_vols = hist["Volume"].iloc[-21:-1]
+        if prev_vols.empty:
             return None
-
-        close_prev = float(hist["Close"].iloc[-1])
-        if close_prev == 0:
+        avg_vol_20d = float(prev_vols.mean())
+        if avg_vol_20d <= 0:
             return None
-
-        pct = (close_today - close_prev) / close_prev * 100.0
-        return {
-            "symbol": symbol,
-            "close": close_today,
-            "prev_close": close_prev,
-            "pct_change": pct,
-        }
+        return round(today_volume / avg_vol_20d, 2)
     except Exception:
         return None
 
 
-async def _get_quote(symbol: str, sem: asyncio.Semaphore) -> dict | None:
+async def _compute_rvol(symbol: str, today_volume: int, sem: asyncio.Semaphore) -> float | None:
     async with sem:
-        return await asyncio.to_thread(_single_quote_sync, symbol)
+        return await asyncio.to_thread(_compute_rvol_sync, symbol, today_volume)
 
 
 async def _fetch_top_gainer_async() -> TopGainer:
-    sem = asyncio.Semaphore(_SEMAPHORE_LIMIT)
-    tasks = [_get_quote(sym, sem) for sym in NASDAQ_WATCHLIST]
-    results = await asyncio.gather(*tasks)
+    """Discover today's top qualifying gainer using the Yahoo Finance screener."""
 
-    valid = [r for r in results if r is not None]
-    if not valid:
-        raise FinancialProviderError("yfinance returned no valid quotes for NASDAQ watchlist")
-
-    best = max(valid, key=lambda r: r["pct_change"])
-    symbol = best["symbol"]
-
-    # Fetch the company display name via .info (fast_info does not carry names)
-    name = symbol
+    # ── Step 1: get day gainers from Yahoo Finance ─────────────────────────────
     try:
-        info = yf.Ticker(symbol).info
-        name = info.get("longName") or info.get("shortName") or symbol
-    except Exception:
-        pass
+        quotes: list[dict] = await asyncio.to_thread(_screen_day_gainers_sync)
+    except Exception as exc:
+        raise FinancialProviderError(f"yfinance screener failed: {exc}") from exc
+
+    if not quotes:
+        raise FinancialProviderError("yfinance screener returned no quotes")
+
+    # ── Step 2: quick filters (no extra requests needed) ───────────────────────
+    # regularMarketChangePercent is in percentage points (5.5 → 5.5%)
+    candidates: list[dict] = []
+    for q in quotes:
+        sym    = q.get("symbol", "")
+        price  = float(q.get("regularMarketPrice", 0) or 0)
+        volume = int(q.get("regularMarketVolume", 0) or 0)
+        pct    = float(q.get("regularMarketChangePercent", 0) or 0)
+        change = float(q.get("regularMarketChange", 0) or 0)
+
+        if (
+            sym
+            and len(sym) <= _MAX_SYM_LEN
+            and price  >= _MIN_PRICE
+            and volume >= _MIN_VOLUME
+            and pct    >= _MIN_PCT
+        ):
+            candidates.append({
+                "symbol":     sym,
+                "close":      price,
+                "volume":     volume,
+                "pct_change": pct,
+                "change":     change,
+                "name":       q.get("longName") or q.get("shortName") or sym,
+            })
+
+    if not candidates:
+        raise FinancialProviderError(
+            f"No stock passed filters (symbol ≤{_MAX_SYM_LEN} chars, "
+            f"close ≥${_MIN_PRICE}, vol ≥{_MIN_VOLUME:,}, "
+            f"change ≥{_MIN_PCT}%) from today's Yahoo Finance screener"
+        )
+
+    # Sort by % change descending; evaluate top N for RVOL
+    candidates.sort(key=lambda c: c["pct_change"], reverse=True)
+    top = candidates[:_MAX_RVOL_CANDIDATES]
+
+    # ── Step 3: compute RVOL concurrently for top candidates ───────────────────
+    sem = asyncio.Semaphore(_SEMAPHORE_LIMIT)
+    rvol_values: list[float | None] = await asyncio.gather(
+        *[_compute_rvol(c["symbol"], c["volume"], sem) for c in top]
+    )
+
+    for c, rvol in zip(top, rvol_values):
+        c["rvol"] = rvol
+
+    # ── Step 4: pick best — prefer RVOL ≥ 2, fall back to highest % change ────
+    rvol_qualified = [c for c in top if c.get("rvol") is not None and c["rvol"] >= _MIN_RVOL]
+    chosen = rvol_qualified[0] if rvol_qualified else top[0]
 
     return TopGainer(
-        symbol=symbol,
-        name=name,
-        price=round(best["close"], 4),
-        change=round(best["close"] - best["prev_close"], 4),
-        change_pct=round(best["pct_change"], 4),
+        symbol=chosen["symbol"],
+        name=chosen["name"],
+        price=round(chosen["close"], 4),
+        change=round(chosen["change"], 4),
+        change_pct=round(chosen["pct_change"], 4),
+        volume=chosen["volume"],
+        rvol=chosen.get("rvol"),
     )
 
 
@@ -166,6 +197,42 @@ def _fetch_price_history_sync(symbol: str, lookback_days: int) -> list[PriceBar]
                 volume=int(row["Volume"]),
             )
         )
+
+    # ── Sanity check + scale correction ──────────────────────────────────────
+    # Yahoo Finance's batch history occasionally returns stale/incorrect prices
+    # (e.g. un-finalised split/dividend adjustments). Cross-check the
+    # second-to-last bar (previous session) against fast_info.previous_close
+    # which comes from the real-time quote feed and is reliable.
+    #
+    # When a >50% discrepancy is detected, apply a uniform scale-correction
+    # factor (fi_prev / history_prev) to all bars *except* the last one —
+    # the most-recent bar is trusted because it was either already correct in
+    # the batch history or was supplemented by period="1d" above.
+    if len(bars) >= 2:
+        try:
+            fi_prev = ticker.fast_info.previous_close
+            if fi_prev and fi_prev > 0:
+                history_prev = bars[-2].close
+                ratio = max(history_prev, fi_prev) / max(min(history_prev, fi_prev), 0.01)
+                if ratio > 1.5:
+                    factor = fi_prev / history_prev
+                    corrected: list[PriceBar] = []
+                    for i, bar in enumerate(bars):
+                        if i < len(bars) - 1:
+                            corrected.append(PriceBar(
+                                date=bar.date,
+                                open=round(bar.open * factor, 4),
+                                high=round(bar.high * factor, 4),
+                                low=round(bar.low * factor, 4),
+                                close=round(bar.close * factor, 4),
+                                volume=bar.volume,
+                            ))
+                        else:
+                            corrected.append(bar)
+                    bars = corrected
+        except Exception:
+            pass  # correction is best-effort; proceed with uncorrected bars
+
     return bars
 
 

@@ -19,14 +19,14 @@ dependencies = [
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     # Financial data providers
-    "finnhub-python>=2.4",
     "yfinance>=0.2",
+    # httpx used for Alpha Vantage REST calls (also used by Brave Search)
     # News providers
     "google-search-results>=2.4",  # SerpAPI
     "httpx>=0.27",                 # Brave Search REST calls
     # Visualization
     "plotly>=5.22",
-    "kaleido>=0.2",                # Static PNG export for Plotly
+    "matplotlib>=3.8",             # Chart PNG export — no browser dependency
     # UI
     "gradio>=4.36",
     # Email
@@ -35,6 +35,7 @@ dependencies = [
 
 [project.scripts]
 bestock = "bestock_agent.cli:main"
+bestock-ui = "bestock_agent.app:main"
 
 [project.optional-dependencies]
 dev = [

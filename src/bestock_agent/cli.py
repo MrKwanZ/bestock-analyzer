@@ -55,6 +55,7 @@ async def run_agent(
         target_date=target_date,
         lookback_days=lookback_days,
         advanced_analysis_enabled=advanced,
+        enable_volatility=advanced,
     )
     state["active_financial_provider"] = provider
 
@@ -177,9 +178,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider",
-        choices=["finnhub", "yfinance"],
-        default="finnhub",
-        help="Primary financial data provider (default: finnhub)",
+        choices=["alphavantage", "yfinance"],
+        default="alphavantage",
+        help="Primary financial data provider (default: alphavantage)",
     )
     return parser.parse_args(argv)
 

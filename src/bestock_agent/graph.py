@@ -89,22 +89,26 @@ def _has_error_from(state: BestockState, node: str) -> bool:
 
 
 def _route_fetch_top_gainer(state: BestockState) -> str:
-    """Route after fetch_top_gainer: proceed or hand off to error_handler."""
-    if state["top_gainer"] is None or _has_error_from(state, _NODE_FETCH_TOP_GAINER):
+    """Proceed only when top_gainer data is actually present in state.
+
+    Errors accumulate via the `add` reducer, so checking error history would
+    incorrectly re-trigger error_handler after a successful provider retry.
+    """
+    if state["top_gainer"] is None:
         return _NODE_ERROR_HANDLER
     return _NODE_FETCH_PRICE_HISTORY
 
 
 def _route_fetch_price_history(state: BestockState) -> str:
-    """Route after fetch_price_history: proceed or hand off to error_handler."""
-    if not state["price_history"] or _has_error_from(state, _NODE_FETCH_PRICE_HISTORY):
+    """Proceed only when price bars are actually present in state."""
+    if not state["price_history"]:
         return _NODE_ERROR_HANDLER
     return _NODE_ANALYZE_TREND
 
 
 def _route_analyze_trend(state: BestockState) -> str:
-    """Route after analyze_trend: branch on advanced-analysis flag or error."""
-    if _has_unrecoverable_error_from(state, _NODE_ANALYZE_TREND):
+    """Proceed only when a TrendAnalysis was successfully produced."""
+    if state.get("trend_analysis") is None:
         return _NODE_ERROR_HANDLER
     if state["advanced_analysis_enabled"]:
         return _NODE_FETCH_NEWS
@@ -121,10 +125,10 @@ def _route_fetch_news(state: BestockState) -> str:
 
 
 def _route_send_email(state: BestockState) -> str:
-    """Route after send_email: surface error or finish."""
-    if _has_error_from(state, _NODE_SEND_EMAIL):
-        return _NODE_ERROR_HANDLER
-    return END
+    """Proceed to END when send_email produced a RunSummary; retry otherwise."""
+    if state.get("run_summary") is not None:
+        return END
+    return _NODE_ERROR_HANDLER
 
 
 def _route_error_handler(state: BestockState) -> str:

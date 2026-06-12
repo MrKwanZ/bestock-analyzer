@@ -51,6 +51,7 @@ class TopGainer(BaseModel):
     change_pct: float
     market_cap: float | None = None
     volume: int | None = None
+    rvol: float | None = None  # today's volume / 20-day avg volume
 
 
 class PriceBar(BaseModel):

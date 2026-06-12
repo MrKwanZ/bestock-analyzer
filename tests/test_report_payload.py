@@ -76,10 +76,24 @@ def test_template_report_includes_greeting_and_sign_off():
 
 
 def test_template_report_includes_suggestion_section():
-    result = _template_report(_gainer(), _analysis(), "2026-06-11")
+    result = _template_report(_gainer(), _analysis(), "2026-06-11", advanced=True)
     assert "Suggestion" in result.text_body
     assert "Recommendation" in result.text_body
     assert "Suggestion" in result.html_body
+
+
+def test_template_report_omits_volatility_when_disabled():
+    result = _template_report(_gainer(), _analysis(), "2026-06-11", enable_volatility=False)
+    assert "Daily Volatility" not in result.text_body
+    assert "Volatility</td>" not in result.html_body
+    assert "daily volatility" not in result.text_body.lower()
+
+
+def test_template_report_includes_volatility_when_enabled():
+    result = _template_report(_gainer(), _analysis(), "2026-06-11", enable_volatility=True)
+    assert "Daily Volatility" in result.text_body
+    assert "Volatility</td>" in result.html_body
+    assert "daily volatility" in result.text_body.lower()
 
 
 def test_generate_suggestion_uptrend_recommends_buy():

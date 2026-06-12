@@ -18,11 +18,17 @@ from bestock_agent.schemas import (
     TrendLabel,
     TopGainer,
 )
-from bestock_agent.services.analysis import format_price_table
+from bestock_agent.services.analysis import build_trend_summary, format_price_table
+
+# ── Constants ──────────────────────────────────────────────────────────────────
 
 _GREETING = "Greetings!"
 _SIGN_OFF_TEXT = "Regards,\nBeStock Agent"
 _SIGN_OFF_HTML = "Regards,<br>BeStock Agent"
+
+_DISCLAIMER_RAW  = "This is informational guidance only and not personal financial advice."
+_DISCLAIMER_TEXT = f"Disclaimer: {_DISCLAIMER_RAW}"
+_DISCLAIMER_HTML = f"<strong>Disclaimer: {_DISCLAIMER_RAW}</strong>"
 
 
 class ReportOutput(BaseModel):
@@ -34,7 +40,7 @@ class ReportOutput(BaseModel):
 
 _SYSTEM = """\
 You are a professional financial analyst assistant. Generate a concise, well-formatted stock analysis email report.
-Keep the language clear, factual, and professional. Frame the suggestion as informational guidance, not personal financial advice.
+Keep the language clear, factual, and professional.
 """
 
 _HUMAN = """\
@@ -58,17 +64,13 @@ BeStock Agent
 ## Quantitative Summary
 - Average Daily Change: {avg_change:+.2f}%
 - Trend Classification: {trend_label}
-- Daily Volatility (Std Dev): {volatility}
-
+{volatility_line}
 ## Trend Explanation
 {trend_summary}
-{sentiment_section}{index_section}
-## Suggestion
-{suggestion_section}
+{sentiment_section}{index_section}{suggestion_content}
 ---
 Return both an HTML version (with subtle inline styling, a readable table, and section headers)
 and a plain-text version. The plain-text version should be fully readable without HTML rendering.
-Include the Suggestion section at the end of the analysis, before the sign-off.
 """
 
 
@@ -81,7 +83,7 @@ def _build_chain(model: str, api_key: str):
     return prompt | structured_llm
 
 
-# ── Section helpers ───────────────────────────────────────────────────────────
+# ── Section helpers ────────────────────────────────────────────────────────────
 
 
 def _sentiment_section_text(sentiment: SentimentResult | None) -> str:
@@ -115,10 +117,23 @@ def _index_section_text(comparison: IndexComparison | None) -> str:
     )
 
 
+def _trend_summary_for_report(analysis: TrendAnalysis, include_volatility: bool) -> str:
+    """Return trend explanation text, omitting volatility unless explicitly enabled."""
+    volatility = analysis.volatility if include_volatility else None
+    return build_trend_summary(
+        analysis.avg_change,
+        analysis.trend_label,
+        len(analysis.bars),
+        volatility,
+    )
+
+
 def _generate_suggestion(
     analysis: TrendAnalysis,
     sentiment: SentimentResult | None,
     comparison: IndexComparison | None,
+    *,
+    include_volatility: bool = True,
 ) -> tuple[str, str]:
     """Return (action, rationale) where action is Buy, Hold, or Sell."""
     score = 0.0
@@ -163,7 +178,11 @@ def _generate_suggestion(
             score -= 1
             reasons.append(f"it is underperforming the S&P 500 ({rel:+.2f}%)")
 
-    if analysis.volatility is not None and analysis.volatility > 3.0:
+    if (
+        include_volatility
+        and analysis.volatility is not None
+        and analysis.volatility > 3.0
+    ):
         score -= 0.5
         reasons.append(f"elevated volatility (±{analysis.volatility:.2f}%) suggests added caution")
 
@@ -175,10 +194,7 @@ def _generate_suggestion(
         action = "Hold"
 
     joined = ", ".join(reasons[:4]) if reasons else "the available signals are mixed"
-    rationale = (
-        f"Based on {joined}, a **{action}** stance is suggested for consideration. "
-        "This is informational guidance only and not personal financial advice."
-    )
+    rationale = f"Based on {joined}, a **{action}** stance is suggested for consideration."
     return action, rationale
 
 
@@ -204,25 +220,37 @@ def _suggestion_section_html(action: str, rationale: str) -> str:
 
 
 def _finalize_email_bodies(html_body: str, text_body: str) -> ReportOutput:
-    """Ensure greeting and sign-off are present in both HTML and plain-text bodies."""
+    """Inject the disclaimer at the top and ensure greeting + sign-off are present."""
+    # ── Plain text ─────────────────────────────────────────────────────────────
     if _GREETING not in text_body:
         text_body = f"{_GREETING}\n\n{text_body.lstrip()}"
+    # Insert disclaimer right after the greeting line
+    if _DISCLAIMER_TEXT not in text_body:
+        text_body = text_body.replace(
+            _GREETING,
+            f"{_GREETING}\n{_DISCLAIMER_TEXT}",
+            1,
+        )
     if _SIGN_OFF_TEXT not in text_body:
         text_body = f"{text_body.rstrip()}\n\n{_SIGN_OFF_TEXT}\n"
 
+    # ── HTML ───────────────────────────────────────────────────────────────────
     if _GREETING not in html_body:
-        html_body = html_body.replace(
-            "<body",
-            f"<body",
-            1,
-        )
-        # Insert greeting right after opening <body ...> tag
+        # Insert greeting right after the opening <body ...> tag
         body_end = html_body.index(">", html_body.index("<body")) + 1
         html_body = (
             html_body[:body_end]
-            + f"\n  <p style='color:#c9d1d9;font-size:14px;margin-bottom:16px'>{_GREETING}</p>"
+            + f"\n  <p style='color:#c9d1d9;font-size:14px;margin-bottom:8px'>{_GREETING}</p>"
             + html_body[body_end:]
         )
+    # Insert disclaimer right after the greeting paragraph
+    if _DISCLAIMER_HTML not in html_body:
+        greeting_tag = f">{_GREETING}</p>"
+        disclaimer_para = (
+            f"  <p style='font-size:20px;margin-bottom:16px'>{_DISCLAIMER_HTML}</p>"
+            f"<p>{_GREETING}</p>\n"
+        )
+        html_body = html_body.replace(greeting_tag, disclaimer_para, 1)
 
     if "BeStock Agent" not in html_body:
         html_body = html_body.replace(
@@ -240,6 +268,8 @@ def _template_report(
     gainer: TopGainer,
     analysis: TrendAnalysis,
     analysis_date: str,
+    advanced: bool = False,
+    enable_volatility: bool = False,
     sentiment: SentimentResult | None = None,
     comparison: IndexComparison | None = None,
 ) -> ReportOutput:
@@ -272,17 +302,31 @@ def _template_report(
             f"Beta                          : {beta_str}\n"
         )
 
-    action, rationale = _generate_suggestion(analysis, sentiment, comparison)
-    suggestion_block = (
-        f"\nSuggestion\n{'-' * 40}\n"
-        f"Recommendation : {action}\n"
-        f"Rationale      : {rationale.replace('**', '')}\n"
-    )
+    trend_summary = _trend_summary_for_report(analysis, enable_volatility)
+
+    # Volatility is shown only when the Volatility advanced setting is enabled.
+    vol_line = f"Daily Volatility     : {vol_str}\n" if enable_volatility else ""
+    suggestion_block = ""
+    if advanced:
+        action, rationale = _generate_suggestion(
+            analysis,
+            sentiment,
+            comparison,
+            include_volatility=enable_volatility,
+        )
+        plain_rationale = rationale.replace("**", "")
+        suggestion_block = (
+            f"\nSuggestion\n{'-' * 40}\n"
+            f"Recommendation : {action}\n"
+            f"Rationale      : {plain_rationale}\n"
+        )
 
     text_body = f"""\
 {_GREETING}
+{_DISCLAIMER_TEXT}
 
-NASDAQ Stock Analysis Report
+Today's Top Stock in NASDAQ: {gainer.symbol}.
+Please find below the Analysis Report:
 {'=' * 40}
 Company : {gainer.name} ({gainer.symbol})
 Date    : {analysis_date}
@@ -297,9 +341,8 @@ Summary
 {'-' * 40}
 Average Daily Change : {analysis.avg_change:+.2f}%
 Trend                : {trend_emoji} {analysis.trend_label.value.title()}
-Daily Volatility     : {vol_str}
-
-{analysis.summary}
+{vol_line}
+{trend_summary}
 {sentiment_block}{index_block}{suggestion_block}
 {_SIGN_OFF_TEXT}
 """
@@ -317,7 +360,7 @@ Daily Volatility     : {vol_str}
             f"</tr>"
         )
 
-    # ── Optional Phase 5 HTML sections ───────────────────────────────────────
+    # Optional advanced HTML sections
     html_sentiment_section = ""
     if sentiment is not None and sentiment.summary:
         sent_color = (
@@ -329,9 +372,7 @@ Daily Volatility     : {vol_str}
         driver_rows = ""
         for d in sentiment.drivers[:4]:
             dir_color = "#3fb950" if d.sentiment.value == "positive" else "#f85149"
-            driver_rows += (
-                f"<li style='margin:3px 0;color:{dir_color}'>{d.text}</li>"
-            )
+            driver_rows += f"<li style='margin:3px 0;color:{dir_color}'>{d.text}</li>"
         driver_html = f"<ul style='margin:6px 0 0 16px;padding:0'>{driver_rows}</ul>" if driver_rows else ""
         html_sentiment_section = (
             f"  <h2 style='color:#58a6ff;font-size:16px'>Market Sentiment</h2>\n"
@@ -363,14 +404,27 @@ Daily Volatility     : {vol_str}
             f"  </table>\n"
         )
 
-    html_suggestion_section = _suggestion_section_html(action, rationale)
+    html_vol_row = (
+        f"    <tr><td style='padding:4px 12px 4px 0;color:#8b949e'>Volatility</td><td>{vol_str}</td></tr>\n"
+        if enable_volatility else ""
+    )
+    html_suggestion_section = ""
+    if advanced:
+        action, rationale = _generate_suggestion(
+            analysis,
+            sentiment,
+            comparison,
+            include_volatility=enable_volatility,
+        )
+        html_suggestion_section = _suggestion_section_html(action, rationale)
 
     html_body = f"""\
 <!DOCTYPE html>
 <html>
 <body style="font-family:Arial,sans-serif;background:#0d1117;color:#c9d1d9;padding:24px;max-width:680px;margin:auto">
-  <p style="color:#c9d1d9;font-size:14px;margin-bottom:16px">{_GREETING}</p>
-  <h1 style="color:#58a6ff;font-size:20px">NASDAQ Stock Analysis Report</h1>
+  <p style="color:#c9d1d9;font-size:14px;margin-bottom:8px">{_GREETING}</p>
+  <p style="color:#c9d1d9;font-size:13px;margin-bottom:16px">{_DISCLAIMER_HTML}</p>
+  <h1 style="color:#58a6ff;font-size:20px">NASDAQ Stock Analysis Report on {gainer.symbol}</h1>
   <table style="border-collapse:collapse;margin-bottom:16px">
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Company</td><td><strong>{gainer.name}</strong> ({gainer.symbol})</td></tr>
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Date</td><td>{analysis_date}</td></tr>
@@ -395,9 +449,8 @@ Daily Volatility     : {vol_str}
   <table style="border-collapse:collapse;margin-bottom:16px">
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Avg Daily Change</td><td>{analysis.avg_change:+.2f}%</td></tr>
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Trend</td><td>{trend_emoji} {analysis.trend_label.value.title()}</td></tr>
-    <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Volatility</td><td>{vol_str}</td></tr>
-  </table>
-  <p style="color:#8b949e;font-size:13px">{analysis.summary}</p>
+{html_vol_row}  </table>
+  <p style="color:#8b949e;font-size:13px">{trend_summary}</p>
 {html_sentiment_section}{html_index_section}{html_suggestion_section}  <p style="color:#c9d1d9;font-size:14px;margin-top:24px">{_SIGN_OFF_HTML}</p>
 </body>
 </html>"""
@@ -405,7 +458,7 @@ Daily Volatility     : {vol_str}
     return ReportOutput(html_body=html_body, text_body=text_body)
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
+# ── Public interface ───────────────────────────────────────────────────────────
 
 
 def compose_report(
@@ -414,22 +467,36 @@ def compose_report(
     analysis_date: str,
     openai_model: str,
     openai_api_key: str,
+    advanced: bool = False,
+    enable_volatility: bool = False,
     sentiment: SentimentResult | None = None,
     comparison: IndexComparison | None = None,
 ) -> ReportOutput:
     """Compose the report using the LLM chain with a template fallback.
 
-    Phase 5: optional *sentiment* and *comparison* data are included when
-    advanced analysis is enabled.
+    Volatility is included only when *enable_volatility* is True.
+    The suggestion section is included only when *advanced* is True.
     """
-    action, rationale = _generate_suggestion(analysis, sentiment, comparison)
-    suggestion_section = _suggestion_section_text(action, rationale)
+    vol_str = f"±{analysis.volatility:.2f}%" if analysis.volatility else "N/A"
+    trend_summary = _trend_summary_for_report(analysis, enable_volatility)
+
+    volatility_line = (
+        f"- Daily Volatility (Std Dev): {vol_str}\n" if enable_volatility else ""
+    )
+    suggestion_content = ""
+    if advanced:
+        action, rationale = _generate_suggestion(
+            analysis,
+            sentiment,
+            comparison,
+            include_volatility=enable_volatility,
+        )
+        suggestion_content = _suggestion_section_text(action, rationale)
 
     key_is_placeholder = not openai_api_key or openai_api_key.startswith("<")
     if not key_is_placeholder:
         try:
             chain = _build_chain(openai_model, openai_api_key)
-            vol_str = f"±{analysis.volatility:.2f}%" if analysis.volatility else "N/A"
             result = chain.invoke({
                 "name": gainer.name,
                 "symbol": gainer.symbol,
@@ -440,14 +507,22 @@ def compose_report(
                 "price_table": format_price_table(analysis.bars, analysis.daily_changes),
                 "avg_change": analysis.avg_change,
                 "trend_label": analysis.trend_label.value.title(),
-                "volatility": vol_str,
-                "trend_summary": analysis.summary,
+                "volatility_line": volatility_line,
+                "trend_summary": trend_summary,
                 "sentiment_section": _sentiment_section_text(sentiment),
                 "index_section": _index_section_text(comparison),
-                "suggestion_section": suggestion_section,
+                "suggestion_content": suggestion_content,
             })
             return _finalize_email_bodies(result.html_body, result.text_body)
         except Exception:
             pass  # Fall through to template
 
-    return _template_report(gainer, analysis, analysis_date, sentiment, comparison)
+    return _template_report(
+        gainer,
+        analysis,
+        analysis_date,
+        advanced=advanced,
+        enable_volatility=enable_volatility,
+        sentiment=sentiment,
+        comparison=comparison,
+    )

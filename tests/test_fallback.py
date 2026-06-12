@@ -25,7 +25,7 @@ def _state(**kwargs) -> dict:
     defaults = dict(
         errors=[],
         retry_count=0,
-        active_financial_provider="finnhub",
+        active_financial_provider="alphavantage",
         active_news_provider="brave",
     )
     return {**defaults, **kwargs}
@@ -65,10 +65,10 @@ def test_not_retryable_with_no_errors():
 # ── decide_fallback ───────────────────────────────────────────────────────────
 
 
-def test_finnhub_falls_back_to_yfinance():
+def test_alphavantage_falls_back_to_yfinance():
     state = _state(
         errors=[_err("fetch_top_gainer")],
-        active_financial_provider="finnhub",
+        active_financial_provider="alphavantage",
     )
     updates = decide_fallback(state)
     assert updates.get("active_financial_provider") == "yfinance"
@@ -86,7 +86,7 @@ def test_yfinance_has_no_further_fallback():
 def test_price_history_also_triggers_fallback():
     state = _state(
         errors=[_err("fetch_price_history")],
-        active_financial_provider="finnhub",
+        active_financial_provider="alphavantage",
     )
     updates = decide_fallback(state)
     assert updates.get("active_financial_provider") == "yfinance"
@@ -104,7 +104,7 @@ def test_brave_falls_back_to_serpapi():
 def test_validation_error_does_not_trigger_provider_switch():
     state = _state(
         errors=[_err("fetch_top_gainer", error_type=ErrorType.VALIDATION_ERROR)],
-        active_financial_provider="finnhub",
+        active_financial_provider="alphavantage",
     )
     updates = decide_fallback(state)
     assert "active_financial_provider" not in updates
@@ -113,13 +113,13 @@ def test_validation_error_does_not_trigger_provider_switch():
 def test_fallback_injects_switch_note():
     state = _state(
         errors=[_err("fetch_top_gainer")],
-        active_financial_provider="finnhub",
+        active_financial_provider="alphavantage",
     )
     updates = decide_fallback(state)
     switch_notes = updates.get("errors", [])
     assert len(switch_notes) == 1
     assert switch_notes[0].fallback_used is True
-    assert "finnhub" in switch_notes[0].message
+    assert "alphavantage" in switch_notes[0].message
     assert "yfinance" in switch_notes[0].message
 
 

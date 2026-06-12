@@ -63,12 +63,13 @@ def compute_volatility(daily_changes: list[float]) -> float | None:
     return round(statistics.stdev(meaningful), 4)
 
 
-def _build_summary(
+def build_trend_summary(
     avg_change: float,
     trend: TrendLabel,
-    volatility: float | None,
     lookback: int,
+    volatility: float | None = None,
 ) -> str:
+    """Return a human-readable trend explanation, optionally including volatility."""
     direction = "gained" if avg_change >= 0 else "declined"
     vol_str = f" with a daily volatility of ±{volatility:.2f}%" if volatility else ""
     return (
@@ -83,7 +84,7 @@ def build_trend_analysis(symbol: str, bars: list[PriceBar]) -> TrendAnalysis:
     avg_change = _avg_excluding_first(daily_changes)
     trend_label = classify_trend(daily_changes)
     volatility = compute_volatility(daily_changes)
-    summary = _build_summary(avg_change, trend_label, volatility, len(bars))
+    summary = build_trend_summary(avg_change, trend_label, len(bars), volatility)
 
     # Back-fill change_pct onto bars (mutates copies, not originals)
     annotated_bars: list[PriceBar] = []

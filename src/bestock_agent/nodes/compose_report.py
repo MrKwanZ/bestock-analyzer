@@ -33,6 +33,8 @@ async def compose_report(state: BestockState) -> dict:
 
     sentiment = state.get("sentiment_result")
     comparison = state.get("index_comparison")
+    advanced = bool(state.get("advanced_analysis_enabled", False))
+    enable_volatility = bool(state.get("enable_volatility", False))
 
     try:
         report = run_report_chain(
@@ -41,6 +43,8 @@ async def compose_report(state: BestockState) -> dict:
             analysis_date=analysis_date,
             openai_model=settings.openai_model,
             openai_api_key=settings.openai_api_key,
+            advanced=advanced,
+            enable_volatility=enable_volatility,
             sentiment=sentiment,
             comparison=comparison,
         )
@@ -54,7 +58,7 @@ async def compose_report(state: BestockState) -> dict:
         )
         return {"errors": [error]}
 
-    subject = f"Analysis Report on {gainer.symbol}"
+    subject = f"BeStock's Top Stock Analysis Report on {gainer.symbol}"
     payload = EmailPayload(
         recipient=state["recipient_email"],
         subject=subject,
