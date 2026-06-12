@@ -50,12 +50,16 @@ def decide_fallback(state: BestockState) -> dict:
     latest: AgentError = errors[-1]
     updates: dict = {}
 
+    if latest.error_type == ErrorType.RATE_LIMIT and not state.get("rate_limit_backoff_used", False):
+        return updates
+
     # Financial provider switch
     if latest.node in _FINANCIAL_NODES and latest.error_type in _RETRYABLE_ERROR_TYPES:
         current = state["active_financial_provider"]
         nxt = _next_in_chain(current, _FINANCIAL_CHAIN)
         if nxt:
             updates["active_financial_provider"] = nxt
+            updates["rate_limit_backoff_used"] = False
             # Inject an informational error record so the CLI / logs show the switch
             switch_note = AgentError(
                 error_type=ErrorType.TOOL_ERROR,
@@ -76,6 +80,7 @@ def decide_fallback(state: BestockState) -> dict:
         nxt = _next_in_chain(current, _NEWS_CHAIN)
         if nxt:
             updates["active_news_provider"] = nxt
+            updates["rate_limit_backoff_used"] = False
             switch_note = AgentError(
                 error_type=ErrorType.TOOL_ERROR,
                 message=(

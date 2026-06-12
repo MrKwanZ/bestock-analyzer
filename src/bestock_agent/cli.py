@@ -93,10 +93,9 @@ async def run_agent(
         print(f"  Label      : {sentiment.label.value.capitalize()}")
         print(f"  Score      : {score_sign}{sentiment.score:.2f}  (confidence {sentiment.confidence:.0%})")
         print(f"  Summary    : {sentiment.summary}")
-        drivers = [d for d in sentiment.drivers]
-        if drivers:
+        if sentiment.drivers:
             print("  Drivers    :")
-            for d in drivers[:4]:
+            for d in sentiment.drivers[:4]:
                 bullet = "  ↑" if d.sentiment.value == "positive" else "  ↓"
                 print(f"    {bullet} {d.text}")
 

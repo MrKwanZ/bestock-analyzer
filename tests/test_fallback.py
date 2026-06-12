@@ -25,6 +25,7 @@ def _state(**kwargs) -> dict:
     defaults = dict(
         errors=[],
         retry_count=0,
+        rate_limit_backoff_used=False,
         active_financial_provider="alphavantage",
         active_news_provider="brave",
     )
@@ -99,6 +100,38 @@ def test_brave_falls_back_to_serpapi():
     )
     updates = decide_fallback(state)
     assert updates.get("active_news_provider") == "serpapi"
+
+
+def test_first_rate_limit_defers_provider_switch_until_backoff():
+    state = _state(
+        errors=[_err("fetch_top_gainer", error_type=ErrorType.RATE_LIMIT)],
+        active_financial_provider="alphavantage",
+        rate_limit_backoff_used=False,
+    )
+    updates = decide_fallback(state)
+    assert updates == {}
+
+
+def test_rate_limit_after_backoff_switches_provider_and_resets_flag():
+    state = _state(
+        errors=[_err("fetch_top_gainer", error_type=ErrorType.RATE_LIMIT)],
+        active_financial_provider="alphavantage",
+        rate_limit_backoff_used=True,
+    )
+    updates = decide_fallback(state)
+    assert updates.get("active_financial_provider") == "yfinance"
+    assert updates.get("rate_limit_backoff_used") is False
+
+
+def test_news_rate_limit_after_backoff_switches_provider_and_resets_flag():
+    state = _state(
+        errors=[_err("fetch_news_and_sentiment", error_type=ErrorType.RATE_LIMIT)],
+        active_news_provider="brave",
+        rate_limit_backoff_used=True,
+    )
+    updates = decide_fallback(state)
+    assert updates.get("active_news_provider") == "serpapi"
+    assert updates.get("rate_limit_backoff_used") is False
 
 
 def test_validation_error_does_not_trigger_provider_switch():

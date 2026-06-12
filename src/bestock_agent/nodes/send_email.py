@@ -6,15 +6,32 @@ Sends the composed report email via SMTP and updates run_summary in state.
 from datetime import datetime, timezone
 
 from bestock_agent.config import get_settings
+from bestock_agent.logging import get_logger
 from bestock_agent.schemas import AgentError, ErrorType, RunSummary
 from bestock_agent.services.email import send_report_email
 from bestock_agent.state import BestockState
+
+log = get_logger("send_email")
 
 
 async def send_email(state: BestockState) -> dict:
     """Deliver the email payload via SMTP and mark email_sent in run_summary."""
     payload = state["email_payload"]
     gainer = state["top_gainer"]
+
+    if state.get("skip_email"):
+        log.info("email_deferred", recipient=state.get("recipient_email", ""))
+        run_summary = RunSummary(
+            success=True,
+            stock_symbol=gainer.symbol if gainer else None,
+            stock_name=gainer.name if gainer else None,
+            change_pct=gainer.change_pct if gainer else None,
+            email_sent=False,
+            email_recipient=state.get("recipient_email"),
+            charts_generated=len(state.get("chart_artifacts", [])),
+            message="Analysis complete — awaiting email confirmation.",
+        )
+        return {"run_summary": run_summary}
 
     if payload is None:
         error = AgentError(
@@ -36,6 +53,7 @@ async def send_email(state: BestockState) -> dict:
         or settings.smtp_password.startswith("<")
     )
     if creds_are_placeholders:
+        log.email_status(sent=False, recipient=payload.recipient, error="SMTP credentials not configured")
         run_summary = RunSummary(
             success=True,
             stock_symbol=gainer.symbol if gainer else None,
@@ -50,7 +68,9 @@ async def send_email(state: BestockState) -> dict:
 
     try:
         await send_report_email(payload, settings)
+        log.email_status(sent=True, recipient=payload.recipient)
     except Exception as exc:
+        log.node_error("send_email", "TOOL_ERROR", str(exc))
         error = AgentError(
             error_type=ErrorType.TOOL_ERROR,
             message=f"SMTP send failed: {exc}",

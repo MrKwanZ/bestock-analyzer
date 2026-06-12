@@ -53,10 +53,12 @@ def _err(node: str, recoverable: bool = True, error_type: ErrorType = ErrorType.
 @pytest.mark.asyncio
 async def test_error_handler_retries_when_budget_available():
     state = _base_state(errors=[_err("fetch_top_gainer")], retry_count=0)
-    result = await error_handler(state)
+    with patch("bestock_agent.nodes.error_handler.wait_for_rate_limit_backoff", new_callable=AsyncMock) as wait:
+        result = await error_handler(state)
     # Should increment retry_count and NOT produce a terminal RunSummary
     assert result.get("retry_count", 0) == 1
     assert "run_summary" not in result or result.get("run_summary") is None
+    wait.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -87,9 +89,47 @@ async def test_error_handler_switches_to_yfinance_on_alphavantage_failure():
         retry_count=0,
         active_financial_provider="alphavantage",
     )
-    result = await error_handler(state)
+    with patch("bestock_agent.nodes.error_handler.wait_for_rate_limit_backoff", new_callable=AsyncMock) as wait:
+        result = await error_handler(state)
     # Provider should switch
     assert result.get("active_financial_provider") == "yfinance"
+    assert result.get("retry_count") == 1
+    wait.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_error_handler_waits_before_same_provider_rate_limit_retry():
+    state = _base_state(
+        errors=[_err("fetch_top_gainer", error_type=ErrorType.RATE_LIMIT)],
+        retry_count=0,
+        active_financial_provider="alphavantage",
+        rate_limit_backoff_used=False,
+    )
+    with patch("bestock_agent.nodes.error_handler.wait_for_rate_limit_backoff", new_callable=AsyncMock) as wait:
+        result = await error_handler(state)
+
+    wait.assert_awaited_once_with(
+        20,
+        provider="alphavantage",
+        node="fetch_top_gainer",
+    )
+    assert result == {"rate_limit_backoff_used": True}
+
+
+@pytest.mark.asyncio
+async def test_error_handler_switches_provider_after_rate_limit_backoff_used():
+    state = _base_state(
+        errors=[_err("fetch_top_gainer", error_type=ErrorType.RATE_LIMIT)],
+        retry_count=0,
+        active_financial_provider="alphavantage",
+        rate_limit_backoff_used=True,
+    )
+    with patch("bestock_agent.nodes.error_handler.wait_for_rate_limit_backoff", new_callable=AsyncMock) as wait:
+        result = await error_handler(state)
+
+    wait.assert_not_awaited()
+    assert result.get("active_financial_provider") == "yfinance"
+    assert result.get("rate_limit_backoff_used") is False
     assert result.get("retry_count") == 1
 
 

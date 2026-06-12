@@ -1,7 +1,7 @@
 """Node: compose_report.
 
 Runs the report chain to produce an EmailPayload stored in state.
-Subject is always "Analysis Report on {SYMBOL}".
+Subject is always "BeStock's Top Performing NASDAQ Stock Analysis Report on {SYMBOL}".
 """
 
 from datetime import datetime, timezone
@@ -58,7 +58,7 @@ async def compose_report(state: BestockState) -> dict:
         )
         return {"errors": [error]}
 
-    subject = f"BeStock's Top Stock Analysis Report on {gainer.symbol}"
+    subject = f"BeStock's Top Performing NASDAQ Stock Analysis Report on {gainer.symbol}"
     payload = EmailPayload(
         recipient=state["recipient_email"],
         subject=subject,

@@ -26,7 +26,10 @@ _GREETING = "Greetings!"
 _SIGN_OFF_TEXT = "Regards,\nBeStock Agent"
 _SIGN_OFF_HTML = "Regards,<br>BeStock Agent"
 
-_DISCLAIMER_RAW  = "This is informational guidance only and not personal financial advice."
+_DISCLAIMER_RAW  = """<ol>
+<li>This is informational guidance only and not personal financial advice.</li>
+<li>A 15-20 minute stock data latency is expected.</li>
+</ol>"""
 _DISCLAIMER_TEXT = f"Disclaimer: {_DISCLAIMER_RAW}"
 _DISCLAIMER_HTML = f"<strong>Disclaimer: {_DISCLAIMER_RAW}</strong>"
 
@@ -50,6 +53,9 @@ Begin the email with "Greetings!" and end with:
 Regards,
 BeStock Agent
 (put a line break between "Regards," and "BeStock Agent")
+
+Immediately after the greeting, open the report by stating the stock name ({name}),
+its ticker symbol ({symbol}), and today's percentage change ({change_pct:+.2f}%).
 
 ## Stock
 - Name: {name}
@@ -84,6 +90,25 @@ def _build_chain(model: str, api_key: str):
 
 
 # ── Section helpers ────────────────────────────────────────────────────────────
+
+
+def _opening_line_text(gainer: TopGainer) -> str:
+    """Opening sentence for plain-text emails — name, symbol, and today's change."""
+    return (
+        f"Today's Top Stock in NASDAQ: {gainer.name} ({gainer.symbol}), "
+        f"with a {gainer.change_pct:+.2f}% change today."
+    )
+
+
+def _opening_line_html(gainer: TopGainer) -> str:
+    """Opening paragraph for HTML emails — name, symbol, and today's change."""
+    color = "#3fb950" if gainer.change_pct >= 0 else "#f85149"
+    return (
+        f'<p style="color:#c9d1d9;font-size:14px;margin-bottom:12px">'
+        f"Today's top NASDAQ performer is <strong>{gainer.name}</strong> "
+        f"({gainer.symbol}), with a "
+        f'<span style="color:{color}">{gainer.change_pct:+.2f}%</span> change today.</p>'
+    )
 
 
 def _sentiment_section_text(sentiment: SentimentResult | None) -> str:
@@ -325,7 +350,7 @@ def _template_report(
 {_GREETING}
 {_DISCLAIMER_TEXT}
 
-Today's Top Stock in NASDAQ: {gainer.symbol}.
+{_opening_line_text(gainer)}
 Please find below the Analysis Report:
 {'=' * 40}
 Company : {gainer.name} ({gainer.symbol})
@@ -424,7 +449,8 @@ Trend                : {trend_emoji} {analysis.trend_label.value.title()}
 <body style="font-family:Arial,sans-serif;background:#0d1117;color:#c9d1d9;padding:24px;max-width:680px;margin:auto">
   <p style="color:#c9d1d9;font-size:14px;margin-bottom:8px">{_GREETING}</p>
   <p style="color:#c9d1d9;font-size:13px;margin-bottom:16px">{_DISCLAIMER_HTML}</p>
-  <h1 style="color:#58a6ff;font-size:20px">NASDAQ Stock Analysis Report on {gainer.symbol}</h1>
+  {_opening_line_html(gainer)}
+  <h1 style="color:#58a6ff;font-size:20px">NASDAQ Stock Analysis Report on {gainer.name} ({gainer.symbol})</h1>
   <table style="border-collapse:collapse;margin-bottom:16px">
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Company</td><td><strong>{gainer.name}</strong> ({gainer.symbol})</td></tr>
     <tr><td style="padding:4px 12px 4px 0;color:#8b949e">Date</td><td>{analysis_date}</td></tr>

@@ -28,6 +28,7 @@ class BestockState(TypedDict):
     recipient_email: str              # email address for the report
     advanced_analysis_enabled: bool   # enables sentiment / index / volatility nodes
     enable_volatility: bool           # include volatility metrics in the email report
+    skip_email: bool                  # when True, analysis completes without sending email
 
     # ── Fetched market data ───────────────────────────────────────────────────
     top_gainer: TopGainer | None
@@ -47,7 +48,8 @@ class BestockState(TypedDict):
     # ── Flow control ──────────────────────────────────────────────────────────
     errors: Annotated[list[AgentError], add]
     retry_count: int
-    active_financial_provider: str    # "finnhub" | "yfinance"
+    rate_limit_backoff_used: bool      # True after retrying same provider for a rate-limit error
+    active_financial_provider: str    # "alphavantage" | "yfinance"
     active_news_provider: str         # "brave"   | "serpapi"
 
     # ── Final ─────────────────────────────────────────────────────────────────
@@ -61,6 +63,7 @@ def initial_state(
     lookback_days: int = 5,
     advanced_analysis_enabled: bool = False,
     enable_volatility: bool = False,
+    skip_email: bool = False,
 ) -> BestockState:
     """Return a fully-initialised state dict for graph invocation."""
     return BestockState(
@@ -69,6 +72,7 @@ def initial_state(
         recipient_email=recipient_email,
         advanced_analysis_enabled=advanced_analysis_enabled,
         enable_volatility=enable_volatility,
+        skip_email=skip_email,
         top_gainer=None,
         price_history=[],
         trend_analysis=None,
@@ -79,6 +83,7 @@ def initial_state(
         email_payload=None,
         errors=[],
         retry_count=0,
+        rate_limit_backoff_used=False,
         active_financial_provider="alphavantage",
         active_news_provider="brave",
         run_summary=None,
