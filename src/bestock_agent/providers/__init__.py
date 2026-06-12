@@ -1,24 +1,24 @@
 """Provider factories — return the correct provider instance for a given name."""
 
 from bestock_agent.providers.financial_base import FinancialProvider
-from bestock_agent.providers.finnhub_provider import FinnhubProvider
 from bestock_agent.providers.news_base import NewsProvider
-from bestock_agent.providers.yfinance_provider import YfinanceProvider
 
 
 def get_financial_provider(name: str) -> FinancialProvider:
     """Instantiate and return the named financial provider.
 
     Args:
-        name: ``"finnhub"`` or ``"yfinance"``
+        name: ``"alphavantage"`` or ``"yfinance"``
 
     Raises:
         ValueError: if *name* is not recognised.
     """
-    if name == "finnhub":
+    if name == "alphavantage":
         from bestock_agent.config import get_settings
-        return FinnhubProvider(api_key=get_settings().finnhub_api_key)
+        from bestock_agent.providers.alphavantage_provider import AlphaVantageProvider
+        return AlphaVantageProvider(api_key=get_settings().alphavantage_api_key)
     if name == "yfinance":
+        from bestock_agent.providers.yfinance_provider import YfinanceProvider
         return YfinanceProvider()
     raise ValueError(f"Unknown financial provider: {name!r}")
 

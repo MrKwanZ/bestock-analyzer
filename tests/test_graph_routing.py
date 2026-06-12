@@ -81,11 +81,11 @@ async def test_error_handler_terminates_on_unrecoverable():
 
 
 @pytest.mark.asyncio
-async def test_error_handler_switches_to_yfinance_on_finnhub_failure():
+async def test_error_handler_switches_to_yfinance_on_alphavantage_failure():
     state = _base_state(
         errors=[_err("fetch_top_gainer")],
         retry_count=0,
-        active_financial_provider="finnhub",
+        active_financial_provider="alphavantage",
     )
     result = await error_handler(state)
     # Provider should switch

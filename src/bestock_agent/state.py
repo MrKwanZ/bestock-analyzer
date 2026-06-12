@@ -26,7 +26,8 @@ class BestockState(TypedDict):
     target_date: str                  # ISO-8601, e.g. "2026-06-11"
     lookback_days: int                # past trading days to analyse (3–30)
     recipient_email: str              # email address for the report
-    advanced_analysis_enabled: bool   # enables sentiment / volatility / index nodes
+    advanced_analysis_enabled: bool   # enables sentiment / index / volatility nodes
+    enable_volatility: bool           # include volatility metrics in the email report
 
     # ── Fetched market data ───────────────────────────────────────────────────
     top_gainer: TopGainer | None
@@ -59,6 +60,7 @@ def initial_state(
     target_date: str,
     lookback_days: int = 5,
     advanced_analysis_enabled: bool = False,
+    enable_volatility: bool = False,
 ) -> BestockState:
     """Return a fully-initialised state dict for graph invocation."""
     return BestockState(
@@ -66,6 +68,7 @@ def initial_state(
         lookback_days=lookback_days,
         recipient_email=recipient_email,
         advanced_analysis_enabled=advanced_analysis_enabled,
+        enable_volatility=enable_volatility,
         top_gainer=None,
         price_history=[],
         trend_analysis=None,
@@ -76,7 +79,7 @@ def initial_state(
         email_payload=None,
         errors=[],
         retry_count=0,
-        active_financial_provider="finnhub",
+        active_financial_provider="alphavantage",
         active_news_provider="brave",
         run_summary=None,
     )
