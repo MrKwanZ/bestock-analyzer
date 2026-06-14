@@ -9,6 +9,7 @@ import gradio as gr
 
 from bestock_agent.config import get_settings
 from bestock_agent.graph import app as agent_app
+from bestock_agent.services.analysis import build_trend_summary
 from bestock_agent.services.validation import ValidationError, validate_email
 from bestock_agent.state import initial_state
 
@@ -126,6 +127,10 @@ label, p, span, h1, h2, h3, h4, h5, h6, li {
     padding:16px 20px; margin-top:8px; width:100%; box-sizing:border-box;
 }
 .dark #bs-confirm-panel { border-color:#374151; }
+#bs-confirm-panel .bs-sending-email {
+    font-size:14px; color:#374151; margin:0;
+}
+.dark #bs-confirm-panel .bs-sending-email { color:#d1d5db; }
 
 /* "How to use" section padding */
 .bs-instructions { padding:5px; }
@@ -205,8 +210,8 @@ def _build_result_html(
 
     # ── Performance card ───────────────────────────────────────────────────────
     if analysis:
-        emoji   = _TREND_EMOJI.get(analysis.trend_label.value, "")
-        vol_str = f"±{analysis.volatility:.2f}%" if analysis.volatility else "—"
+        emoji = _TREND_EMOJI.get(analysis.trend_label.value, "")
+        include_volatility = show_advanced and show_volatility
         metrics = (
             f"<div class='bs-metrics'>"
             f"<div><p class='bs-metric-label'>TREND</p>"
@@ -214,13 +219,22 @@ def _build_result_html(
             f"<div><p class='bs-metric-label'>AVG DAILY CHANGE</p>"
             f"<p class='bs-metric-value'>{'+' if analysis.avg_change >= 0 else ''}{analysis.avg_change:.2f}%</p></div>"
         )
-        # Volatility only shown when its toggle is enabled
-        if show_advanced and show_volatility:
+        if include_volatility:
+            vol_str = f"±{analysis.volatility:.2f}%" if analysis.volatility else "—"
             metrics += (
                 f"<div><p class='bs-metric-label'>VOLATILITY</p>"
                 f"<p class='bs-metric-value'>{vol_str}</p></div>"
             )
-        metrics += f"</div><p class='bs-summary'>{analysis.summary}</p>"
+        summary = (
+            analysis.summary
+            if include_volatility
+            else build_trend_summary(
+                analysis.avg_change,
+                analysis.trend_label,
+                len(analysis.bars),
+            )
+        )
+        metrics += f"</div><p class='bs-summary'>{summary}</p>"
         sections += _card(_section_label(f"{len(analysis.bars)}-Day Performance Summary") + metrics)
 
     # ── Sentiment card ─────────────────────────────────────────────────────────
@@ -363,14 +377,24 @@ def _result_from_state(final: dict, ctx: dict, *, email_cancelled: bool = False)
     )
 
 
-def _hide_confirm() -> dict:
-    return gr.update(visible=False)
+def _clear_confirm() -> tuple[dict, str, dict]:
+    """Hide the confirmation panel and reset button visibility for the next run."""
+    return gr.update(visible=False), "", gr.update(visible=True)
 
 
-def _show_confirm(recipient: str) -> tuple[dict, str]:
+def _show_confirm(recipient: str) -> tuple[dict, str, dict]:
     return (
         gr.update(visible=True),
         f"Send the analysis report to **{recipient}**?",
+        gr.update(visible=True),
+    )
+
+
+def _show_sending() -> tuple[dict, str, dict]:
+    return (
+        gr.update(visible=True),
+        "<p class='bs-sending-email'>Sending email…</p>",
+        gr.update(visible=False),
     )
 
 
@@ -387,10 +411,10 @@ async def _run_analysis(
     """Validate, run analysis (without sending email), then prompt for confirmation."""
     err = _validate_inputs(recipient_input, show_advanced, lookback_raw)
     if err:
-        yield _error_html(err), _hide_confirm(), "", None, {}
+        yield _error_html(err), *_clear_confirm(), None, {}
         return
 
-    yield _PROGRESS_HTML, _hide_confirm(), "", None, {}
+    yield _PROGRESS_HTML, *_clear_confirm(), None, {}
 
     settings  = get_settings()
     recipient = recipient_input.strip()
@@ -398,7 +422,7 @@ async def _run_analysis(
     if show_advanced:
         days, err = _validate_lookback(lookback_raw, required=True)
         if err:
-            yield _error_html(f"Invalid Lookback Days — {err}"), _hide_confirm(), "", None, {}
+            yield _error_html(f"Invalid Lookback Days — {err}"), *_clear_confirm(), None, {}
             return
     else:
         days = settings.default_lookback_days
@@ -425,23 +449,32 @@ async def _run_analysis(
         msg = errors[-1].message if errors else (
             run_summary.message if run_summary else "Unknown error"
         )
-        yield _error_html(msg), _hide_confirm(), "", None, {}
+        yield _error_html(msg), *_clear_confirm(), None, {}
         return
 
-    confirm_panel, confirm_text = _show_confirm(recipient)
+    confirm_panel, confirm_text, confirm_buttons = _show_confirm(recipient)
     yield (
         _result_from_state(final, ctx),
         confirm_panel,
         confirm_text,
+        confirm_buttons,
         final,
         ctx,
     )
 
 
 async def _confirm_send_email(pending_state: dict | None, ctx: dict):
-    """User confirmed — send the prepared email."""
+    """User confirmed — show sending state, then deliver the prepared email."""
     if not pending_state:
-        return _error_html("No analysis to send."), _hide_confirm(), "", None, {}
+        yield _error_html("No analysis to send."), *_clear_confirm(), None, {}
+        return
+
+    yield (
+        _result_from_state(pending_state, ctx),
+        *_show_sending(),
+        pending_state,
+        ctx,
+    )
 
     from bestock_agent.nodes.send_email import send_email
 
@@ -450,10 +483,9 @@ async def _confirm_send_email(pending_state: dict | None, ctx: dict):
     send_result = await send_email(state)
     merged = {**pending_state, **send_result}
 
-    return (
+    yield (
         _result_from_state(merged, ctx),
-        _hide_confirm(),
-        "",
+        *_clear_confirm(),
         None,
         ctx,
     )
@@ -462,12 +494,11 @@ async def _confirm_send_email(pending_state: dict | None, ctx: dict):
 async def _cancel_send_email(pending_state: dict | None, ctx: dict):
     """User declined — keep results but do not send email."""
     if not pending_state:
-        return "", _hide_confirm(), "", None, {}
+        return "", *_clear_confirm(), None, {}
 
     return (
         _result_from_state(pending_state, ctx, email_cancelled=True),
-        _hide_confirm(),
-        "",
+        *_clear_confirm(),
         None,
         ctx,
     )
@@ -487,8 +518,7 @@ def _reset(default_days: int):
         False,    # enable_volatility
         gr.update(visible=False),   # adv_panel
         "",       # status_panel
-        _hide_confirm(),  # confirm_panel
-        "",       # confirm_text
+        *_clear_confirm(),
         None,     # pending_state
         {},       # ui_context
     )
@@ -578,7 +608,7 @@ def build_ui() -> gr.Blocks:
 
         with gr.Column(visible=False, elem_id="bs-confirm-panel") as confirm_panel:
             confirm_text = gr.Markdown("")
-            with gr.Row():
+            with gr.Row() as confirm_buttons:
                 confirm_yes = gr.Button("Yes", variant="primary")
                 confirm_no = gr.Button("No", variant="secondary")
 
@@ -604,6 +634,7 @@ def build_ui() -> gr.Blocks:
                 status_panel,
                 confirm_panel,
                 confirm_text,
+                confirm_buttons,
                 pending_state,
                 ui_context,
             ],
@@ -617,6 +648,7 @@ def build_ui() -> gr.Blocks:
                 status_panel,
                 confirm_panel,
                 confirm_text,
+                confirm_buttons,
                 pending_state,
                 ui_context,
             ],
@@ -630,6 +662,7 @@ def build_ui() -> gr.Blocks:
                 status_panel,
                 confirm_panel,
                 confirm_text,
+                confirm_buttons,
                 pending_state,
                 ui_context,
             ],
@@ -649,6 +682,7 @@ def build_ui() -> gr.Blocks:
                 status_panel,
                 confirm_panel,
                 confirm_text,
+                confirm_buttons,
                 pending_state,
                 ui_context,
             ],
