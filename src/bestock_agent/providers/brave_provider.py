@@ -46,7 +46,7 @@ class BraveProvider(NewsProvider):
                 if resp.status_code == 429:
                     raise NewsRateLimitError(f"Brave Search rate limit: {resp.text[:200]}")
                 if resp.status_code == 401:
-                    raise NewsProviderError(f"Brave Search auth failed: check BRAVE_API_KEY")
+                    raise NewsProviderError("Brave Search auth failed: check BRAVE_API_KEY")
                 resp.raise_for_status()
                 data = resp.json()
         except NewsProviderError:

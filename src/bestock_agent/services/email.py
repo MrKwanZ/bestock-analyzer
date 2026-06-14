@@ -11,13 +11,13 @@ from email.mime.text import MIMEText
 import aiosmtplib
 import certifi
 
+from bestock_agent.schemas import EmailPayload
+
 
 def _ssl_context() -> ssl.SSLContext:
     """Return an SSL context that uses certifi's CA bundle (fixes macOS cert issues)."""
     ctx = ssl.create_default_context(cafile=certifi.where())
     return ctx
-
-from bestock_agent.schemas import EmailPayload
 
 
 async def send_report_email(payload: EmailPayload, settings) -> None:  # type: ignore[type-arg]

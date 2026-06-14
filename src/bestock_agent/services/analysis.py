@@ -5,7 +5,6 @@ TrendAnalysis. All functions are synchronous and side-effect free.
 """
 
 import statistics
-from datetime import date
 
 from bestock_agent.schemas import PriceBar, TrendAnalysis, TrendLabel
 

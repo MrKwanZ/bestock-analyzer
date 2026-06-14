@@ -1,8 +1,6 @@
 """Tests for bestock_agent.logging — structured logger helpers."""
 
-import logging
 
-import pytest
 
 from bestock_agent.logging import BestockLogger, get_logger, timer
 

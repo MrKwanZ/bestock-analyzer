@@ -132,7 +132,6 @@ cp .env.example .env
 | `OPENAI_API_KEY`             | Yes      | OpenAI key for report, sentiment, and query-refinement chains                       |
 | `OPENAI_MODEL`               | optional | Model name (default: `gpt-5.4-mini`)                                                 |
 | `ALPHAVANTAGE_API_KEY`       | Yes      | [Alpha Vantage](https://www.alphavantage.co/support/#api-key) free key              |
-| `YFINANCE_ENABLED`           | optional | Set to `1` to enable yfinance fallback (default: `1`)                               |
 | `BRAVE_API_KEY`              | optional | [Brave Search API](https://api.search.brave.com) key for news                       |
 | `SERPAPI_API_KEY`            | optional | [SerpAPI](https://serpapi.com) key (news fallback)                                  |
 | `SMTP_HOST`                  | Yes      | e.g. `smtp.gmail.com`                                                               |

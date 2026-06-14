@@ -23,7 +23,6 @@ class Settings(BaseSettings):
 
     # ── Financial data providers ───────────────────────────────────────────────
     alphavantage_api_key: str
-    yfinance_enabled: bool = True
 
     # ── News providers ─────────────────────────────────────────────────────────
     brave_api_key: str = ""
@@ -33,7 +32,6 @@ class Settings(BaseSettings):
     langsmith_tracing: bool = False
     langsmith_api_key: str = ""
     langsmith_project: str = "bestock-analyzer"
-    langsmith_endpoint: str = "https://api.smith.langchain.com"
 
     # ── Email ─────────────────────────────────────────────────────────────────
     smtp_host: str = "smtp.gmail.com"

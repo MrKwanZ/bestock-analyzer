@@ -66,4 +66,4 @@ async def compose_report(state: BestockState) -> dict:
         body_text=report.text_body,
         chart_paths=chart_paths,
     )
-    return {"email_payload": payload, "report_text": report.text_body}
+    return {"email_payload": payload}

@@ -4,7 +4,7 @@ All tests use mocked providers so no real API calls are made.
 """
 
 from datetime import date, datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -167,7 +167,6 @@ async def test_fetch_top_gainer_validates_and_rejects_zero_price():
     from bestock_agent.nodes.fetch_top_gainer import fetch_top_gainer
 
     state = _base_state()
-    bad_gainer = TopGainer(symbol="BAD", name="Bad Corp", price=0.0001, change=0, change_pct=0)
 
     # Force pydantic to accept price=0.0001 but then validation catches it via validate_top_gainer
     # (price > 0 passes pydantic but change_pct=-100 → implausible)

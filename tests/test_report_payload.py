@@ -2,7 +2,6 @@
 
 from datetime import date
 
-import pytest
 
 from bestock_agent.chains.report_chain import (
     ReportOutput,
@@ -63,7 +62,7 @@ def test_template_report_subject_format():
     """The compose_report node should set subject to 'BeStock's Top Performing NASDAQ Stock Analysis Report on SYMBOL'."""
     symbol = _gainer().symbol
     expected_subject = f"BeStock's Top Performing NASDAQ Stock Analysis Report on {symbol}"
-    assert expected_subject == f"BeStock's Top Performing NASDAQ Stock Analysis Report on NVDA"
+    assert expected_subject == "BeStock's Top Performing NASDAQ Stock Analysis Report on NVDA"
 
 
 def test_template_report_includes_greeting_and_sign_off():

@@ -11,7 +11,6 @@ from pathlib import Path
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import numpy as np
 
 matplotlib.use("Agg")   # headless, no display needed
 
@@ -194,7 +193,7 @@ def generate_index_comparison_chart(
         f"{symbol} vs S&P 500 — Normalised Performance (base = 100)",
         color=_TEXT, fontsize=13, pad=12,
     )
-    legend = ax.legend(facecolor=_AXES_BG, edgecolor=_GRID, labelcolor=_TEXT, fontsize=9)
+    ax.legend(facecolor=_AXES_BG, edgecolor=_GRID, labelcolor=_TEXT, fontsize=9)
 
     out = _ensure_dir(output_dir)
     path = out / f"{symbol}_vs_sp500.png"

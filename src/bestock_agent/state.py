@@ -42,7 +42,6 @@ class BestockState(TypedDict):
     # ── Output artefacts ─────────────────────────────────────────────────────
     # Reducers: list entries are *appended* across node calls, not replaced.
     chart_artifacts: Annotated[list[ChartArtifact], add]
-    report_text: str
     email_payload: EmailPayload | None
 
     # ── Flow control ──────────────────────────────────────────────────────────
@@ -79,7 +78,6 @@ def initial_state(
         sentiment_result=None,
         index_comparison=None,
         chart_artifacts=[],
-        report_text="",
         email_payload=None,
         errors=[],
         retry_count=0,

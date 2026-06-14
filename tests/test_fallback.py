@@ -2,7 +2,6 @@
 
 from datetime import datetime, timezone
 
-import pytest
 
 from bestock_agent.schemas import AgentError, ErrorType
 from bestock_agent.services.fallback import decide_fallback, failing_node, is_retryable

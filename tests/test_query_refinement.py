@@ -1,6 +1,5 @@
 """Tests for chains/query_refinement_chain.py."""
 
-import pytest
 
 from bestock_agent.chains.query_refinement_chain import _fallback_refinement, refine_query
 

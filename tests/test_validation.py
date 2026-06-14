@@ -165,7 +165,6 @@ def test_bars_zero_close():
 
 
 def test_bars_high_less_than_low():
-    today = str(date.today())
     yesterday = str(date.today() - timedelta(days=1))
     bars = [
         _bar(yesterday),

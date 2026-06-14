@@ -2,7 +2,6 @@
 
 from datetime import date
 
-import pytest
 
 from bestock_agent.schemas import PriceBar, TrendLabel
 from bestock_agent.services.analysis import (

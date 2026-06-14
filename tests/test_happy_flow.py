@@ -7,7 +7,7 @@ made — all providers are patched at the node boundary.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,10 +15,8 @@ import pytest
 from bestock_agent.graph import app as agent_app
 from bestock_agent.providers.financial_base import RateLimitError
 from bestock_agent.schemas import (
-    AgentError,
     ChartArtifact,
     ChartType,
-    ErrorType,
     IndexBar,
     IndexComparison,
     IndexData,
