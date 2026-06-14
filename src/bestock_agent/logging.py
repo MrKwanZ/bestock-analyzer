@@ -20,7 +20,7 @@ Usage::
     log.fallback_switch("alphavantage", "yfinance", reason="rate limit hit")
     log.backoff_waiting(provider="alphavantage", node="fetch_top_gainer", seconds=20)
     log.validation_failure("change_pct", "Value 99999 exceeds plausible range")
-    log.token_usage(model="gpt-4o-mini", prompt=420, completion=180, total=600)
+    log.token_usage(model="gpt-5.4-mini", prompt=420, completion=180, total=600)
     log.email_status(sent=True, recipient="user@example.com")
     log.node_error("fetch_top_gainer", "TOOL_ERROR", "API returned 503", retry=1)
 """

@@ -1,19 +1,25 @@
 """Centralised settings loaded once from environment variables / .env file."""
 
+from pathlib import Path
+
 from pydantic import EmailStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve .env from the project root so settings load correctly regardless of cwd.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
     # ── LLM ───────────────────────────────────────────────────────────────────
     openai_api_key: str
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-5.4-mini"
 
     # ── Financial data providers ───────────────────────────────────────────────
     alphavantage_api_key: str
