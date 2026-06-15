@@ -518,7 +518,7 @@ async def _confirm_send_email(pending_thread_id: str | None, ctx: dict):
         await assert_resumable(agent_app, config)
     except StaleCheckpointError:
         yield (
-            _error_html("This analysis session is outdated — please run a new analysis."),
+            _error_html("This analysis session is expired — please run a new analysis."),
             *_clear_confirm(),
             None,
             ctx,

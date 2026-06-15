@@ -72,7 +72,7 @@ sleekflow-assignment/
                 fetch_price_history        fetch_news_and_sentiment
                         │                 (query refinement + LLM)
                         ▼                            │
-                 analyze_trend ─── advanced? ───────┘
+                 analyze_trend ─── advanced? ────────┘
                         │                            │
                  build_charts ◄──────────── compare_with_indices
                         │
