@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bestock_agent.graph import app as agent_app
+from bestock_agent.checkpoint import make_thread_id, prepare_invoke_state, run_config
 from bestock_agent.providers.financial_base import RateLimitError
 from bestock_agent.schemas import (
     ChartArtifact,
@@ -26,6 +26,12 @@ from bestock_agent.schemas import (
     TopGainer,
 )
 from bestock_agent.state import initial_state
+
+
+async def _invoke(agent_app, state):
+    config = run_config(make_thread_id("test"))
+    state = await prepare_invoke_state(agent_app, config, state)
+    return await agent_app.ainvoke(state, config=config)
 
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
@@ -87,7 +93,7 @@ def _chart_artifact() -> ChartArtifact:
 # ── Happy flow: basic (no advanced analysis) ──────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_happy_flow_basic_no_advanced():
+async def test_happy_flow_basic_no_advanced(agent_app):
     """Full graph with no advanced analysis — should reach END with success."""
     state = initial_state(
         recipient_email="test@example.com",
@@ -112,7 +118,7 @@ async def test_happy_flow_basic_no_advanced():
         patch("bestock_agent.nodes.build_charts.generate_sentiment_chart", return_value=_chart_artifact()),
         patch("bestock_agent.nodes.send_email.send_report_email", new_callable=AsyncMock),
     ):
-        final = await agent_app.ainvoke(state)
+        final = await _invoke(agent_app, state)
 
     run_summary = final.get("run_summary")
     assert run_summary is not None, "run_summary should be set after successful run"
@@ -126,7 +132,7 @@ async def test_happy_flow_basic_no_advanced():
 # ── Happy flow: advanced analysis enabled ─────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_happy_flow_advanced_analysis():
+async def test_happy_flow_advanced_analysis(agent_app):
     """Full graph with advanced analysis — sentiment + index comparison included."""
     state = initial_state(
         recipient_email="test@example.com",
@@ -167,7 +173,7 @@ async def test_happy_flow_advanced_analysis():
         patch("bestock_agent.nodes.build_charts.generate_sentiment_chart", return_value=_chart_artifact()),
         patch("bestock_agent.nodes.send_email.send_report_email", new_callable=AsyncMock),
     ):
-        final = await agent_app.ainvoke(state)
+        final = await _invoke(agent_app, state)
 
     run_summary = final.get("run_summary")
     assert run_summary is not None
@@ -178,7 +184,7 @@ async def test_happy_flow_advanced_analysis():
 # ── Happy flow: email delivery confirmed ──────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_happy_flow_email_sent_flag():
+async def test_happy_flow_email_sent_flag(agent_app):
     """Email send should be reflected in run_summary.email_sent."""
     state = initial_state(
         recipient_email="recipient@example.com",
@@ -205,7 +211,7 @@ async def test_happy_flow_email_sent_flag():
             smtp_password="real_password",
         )),
     ):
-        final = await agent_app.ainvoke(state)
+        final = await _invoke(agent_app, state)
 
     assert final["run_summary"].email_sent is True
     assert final["run_summary"].email_recipient == "recipient@example.com"
@@ -214,7 +220,7 @@ async def test_happy_flow_email_sent_flag():
 # ── Fallback: alphavantage → yfinance ─────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_fallback_alphavantage_to_yfinance():
+async def test_fallback_alphavantage_to_yfinance(agent_app):
     """When alphavantage fails, the graph should retry with yfinance."""
     state = initial_state(
         recipient_email="test@example.com",
@@ -244,7 +250,7 @@ async def test_fallback_alphavantage_to_yfinance():
         patch("bestock_agent.nodes.build_charts.generate_sentiment_chart", return_value=_chart_artifact()),
         patch("bestock_agent.nodes.send_email.send_report_email", new_callable=AsyncMock),
     ):
-        final = await agent_app.ainvoke(state)
+        final = await _invoke(agent_app, state)
 
     # Provider should have switched and the run should ultimately succeed
     assert final.get("top_gainer") is not None
@@ -253,7 +259,7 @@ async def test_fallback_alphavantage_to_yfinance():
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_backoff_retries_same_provider_then_succeeds():
+async def test_rate_limit_backoff_retries_same_provider_then_succeeds(agent_app):
     """A first rate limit should wait, retry the same provider, and continue."""
     state = initial_state(
         recipient_email="test@example.com",
@@ -284,7 +290,7 @@ async def test_rate_limit_backoff_retries_same_provider_then_succeeds():
         patch("bestock_agent.nodes.build_charts.generate_sentiment_chart", return_value=_chart_artifact()),
         patch("bestock_agent.nodes.send_email.send_report_email", new_callable=AsyncMock),
     ):
-        final = await agent_app.ainvoke(state)
+        final = await _invoke(agent_app, state)
 
     wait.assert_awaited_once()
     assert final.get("top_gainer") is not None
@@ -295,7 +301,7 @@ async def test_rate_limit_backoff_retries_same_provider_then_succeeds():
 # ── Error handling: unrecoverable failure → failure summary ───────────────────
 
 @pytest.mark.asyncio
-async def test_unrecoverable_error_produces_failure_summary():
+async def test_unrecoverable_error_produces_failure_summary(agent_app):
     """A validation error (non-recoverable) should produce a failed RunSummary."""
     from bestock_agent.services.validation import ValidationError  # noqa: F401
 
@@ -316,7 +322,7 @@ async def test_unrecoverable_error_produces_failure_summary():
         patch("bestock_agent.nodes.fetch_top_gainer.get_financial_provider", return_value=mock_fin),
         patch("bestock_agent.nodes.fetch_price_history.get_financial_provider", return_value=mock_fin),
     ):
-        final = await agent_app.ainvoke(state)
+        final = await _invoke(agent_app, state)
 
     run_summary = final.get("run_summary")
     assert run_summary is not None
@@ -362,3 +368,60 @@ def test_validate_inputs_rejects_lookback_out_of_range():
     err = _validate_inputs("user@example.com", True, 50)
     assert err != ""
     assert "lookback" in err.lower()
+
+
+def test_toggle_advanced_controls_panel_visibility():
+    import gradio as gr
+
+    from bestock_agent.app import _toggle_advanced
+
+    assert _toggle_advanced(True) == gr.update(visible=True)
+    assert _toggle_advanced(False) == gr.update(visible=False)
+
+
+def test_show_confirm_reveals_panel_and_buttons():
+    import gradio as gr
+
+    from bestock_agent.app import _clear_confirm, _lock_primary_buttons, _show_confirm
+
+    panel, text, yes, no = _show_confirm("user@example.com")
+    assert panel == gr.update(visible=True)
+    assert yes == gr.update(visible=True, interactive=True)
+    assert no == gr.update(visible=True, interactive=True)
+    assert "user@example.com" in text
+
+    panel, text, yes, no = _clear_confirm()
+    assert panel == gr.update(visible=False)
+    assert yes == gr.update(visible=False, interactive=False)
+    assert no == gr.update(visible=False, interactive=False)
+
+
+def test_lock_primary_buttons_disables_start_and_reset():
+    import gradio as gr
+
+    from bestock_agent.app import _lock_primary_buttons
+
+    start, reset = _lock_primary_buttons(locked=True)
+    assert start == gr.update(interactive=False)
+    assert reset == gr.update(interactive=False)
+
+    start, reset = _lock_primary_buttons(locked=False)
+    assert start == gr.update(interactive=True)
+    assert reset == gr.update(interactive=True)
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_locks_buttons_during_progress():
+    from bestock_agent.app import _lock_primary_buttons, _run_analysis
+
+    gen = _run_analysis("not-an-email", False, 5, False, False, False)
+    status, *_rest = await gen.__anext__()
+    start, reset = _rest[-2], _rest[-1]
+    assert "Run failed" in status or "Invalid" in status
+    assert start == _lock_primary_buttons(locked=False)[0]
+
+    gen = _run_analysis("user@example.com", False, 5, False, False, False)
+    status, *_rest = await gen.__anext__()
+    assert "progress" in status.lower()
+    assert _rest[-2:] == list(_lock_primary_buttons(locked=True))
+    await gen.aclose()

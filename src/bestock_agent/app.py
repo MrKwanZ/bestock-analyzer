@@ -6,12 +6,20 @@ from collections.abc import AsyncGenerator
 from datetime import date
 
 import gradio as gr
+from langgraph.types import Command
 
+from bestock_agent.checkpoint import (
+    assert_resumable,
+    make_thread_id,
+    prepare_invoke_state,
+    run_config,
+)
 from bestock_agent.config import get_settings
-from bestock_agent.graph import app as agent_app
+from bestock_agent.graph import app_with_interrupt as agent_app
 from bestock_agent.services.analysis import build_trend_summary
 from bestock_agent.services.validation import ValidationError, validate_email
 from bestock_agent.state import initial_state
+from bestock_agent.state_migration import StaleCheckpointError
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -183,6 +191,7 @@ def _build_result_html(
     show_volatility: bool,
     *,
     email_cancelled: bool = False,
+    email_pending: bool = False,
 ) -> str:
     gainer    = final.get("top_gainer")
     analysis  = final.get("trend_analysis")
@@ -279,17 +288,22 @@ def _build_result_html(
 
     # ── Email notification ─────────────────────────────────────────────────────
     email_html = ""
-    if run_summary:
-        payload = final.get("email_payload")
+    payload = final.get("email_payload")
+    if run_summary or payload or email_pending:
         addr = (
             str(payload.recipient) if payload
-            else run_summary.email_recipient or final.get("recipient_email", "—")
+            else (run_summary.email_recipient if run_summary else None)
+            or final.get("recipient_email", "—")
         )
         if email_cancelled:
             email_html = _email_status_html(addr, cancelled=True)
-        elif run_summary.email_sent:
+        elif run_summary and run_summary.email_sent:
             email_html = _email_status_html(addr, sent=True)
-        elif "awaiting email confirmation" in run_summary.message.lower():
+        elif email_pending or (
+            run_summary and "awaiting email confirmation" in run_summary.message.lower()
+        ):
+            email_html = _email_status_html(addr, pending=True)
+        elif payload:
             email_html = _email_status_html(addr, pending=True)
         else:
             email_html = _email_status_html(addr, sent=False)
@@ -366,7 +380,13 @@ def _ui_context(
     }
 
 
-def _result_from_state(final: dict, ctx: dict, *, email_cancelled: bool = False) -> str:
+def _result_from_state(
+    final: dict,
+    ctx: dict,
+    *,
+    email_cancelled: bool = False,
+    email_pending: bool = False,
+) -> str:
     return _build_result_html(
         final,
         ctx["show_advanced"],
@@ -374,27 +394,39 @@ def _result_from_state(final: dict, ctx: dict, *, email_cancelled: bool = False)
         ctx["enable_index"],
         ctx["enable_volatility"],
         email_cancelled=email_cancelled,
+        email_pending=email_pending,
     )
 
 
-def _clear_confirm() -> tuple[dict, str, dict]:
-    """Hide the confirmation panel and reset button visibility for the next run."""
-    return gr.update(visible=False), "", gr.update(visible=True)
+def _lock_primary_buttons(*, locked: bool) -> tuple[dict, dict]:
+    """Disable or re-enable Start and Reset while work is in progress."""
+    update = gr.update(interactive=not locked)
+    return update, update
 
 
-def _show_confirm(recipient: str) -> tuple[dict, str, dict]:
+def _clear_confirm() -> tuple[dict, str, dict, dict]:
+    """Hide the confirmation panel and both action buttons."""
+    hidden = gr.update(visible=False, interactive=False)
+    return gr.update(visible=False), "", hidden, hidden
+
+
+def _show_confirm(recipient: str) -> tuple[dict, str, dict, dict]:
+    visible = gr.update(visible=True, interactive=True)
     return (
         gr.update(visible=True),
         f"Send the analysis report to **{recipient}**?",
-        gr.update(visible=True),
+        visible,
+        visible,
     )
 
 
-def _show_sending() -> tuple[dict, str, dict]:
+def _show_sending() -> tuple[dict, str, dict, dict]:
+    hidden = gr.update(visible=False, interactive=False)
     return (
         gr.update(visible=True),
         "<p class='bs-sending-email'>Sending email…</p>",
-        gr.update(visible=False),
+        hidden,
+        hidden,
     )
 
 
@@ -411,10 +443,10 @@ async def _run_analysis(
     """Validate, run analysis (without sending email), then prompt for confirmation."""
     err = _validate_inputs(recipient_input, show_advanced, lookback_raw)
     if err:
-        yield _error_html(err), *_clear_confirm(), None, {}
+        yield _error_html(err), *_clear_confirm(), None, {}, *_lock_primary_buttons(locked=False)
         return
 
-    yield _PROGRESS_HTML, *_clear_confirm(), None, {}
+    yield _PROGRESS_HTML, *_clear_confirm(), None, {}, *_lock_primary_buttons(locked=True)
 
     settings  = get_settings()
     recipient = recipient_input.strip()
@@ -422,7 +454,7 @@ async def _run_analysis(
     if show_advanced:
         days, err = _validate_lookback(lookback_raw, required=True)
         if err:
-            yield _error_html(f"Invalid Lookback Days — {err}"), *_clear_confirm(), None, {}
+            yield _error_html(f"Invalid Lookback Days — {err}"), *_clear_confirm(), None, {}, *_lock_primary_buttons(locked=False)
             return
     else:
         days = settings.default_lookback_days
@@ -436,71 +468,104 @@ async def _run_analysis(
         lookback_days=days,
         advanced_analysis_enabled=advanced,
         enable_volatility=show_advanced and enable_volatility,
-        skip_email=True,
     )
     state["active_financial_provider"] = "alphavantage"
 
-    final       = await agent_app.ainvoke(state)
-    run_summary = final.get("run_summary")
-    gainer      = final.get("top_gainer")
+    thread_id = make_thread_id("ui")
+    config = run_config(thread_id)
+    state = await prepare_invoke_state(agent_app, config, state)
 
-    if not gainer or not run_summary or not run_summary.success:
+    await agent_app.ainvoke(state, config=config)
+    snapshot = await agent_app.aget_state(config)
+    final = dict(snapshot.values) if snapshot.values else {}
+    gainer = final.get("top_gainer")
+    paused_for_email = bool(snapshot.next and "send_email" in snapshot.next)
+
+    if not gainer or not (final.get("email_payload") or paused_for_email):
         errors = final.get("errors", [])
+        run_summary = final.get("run_summary")
         msg = errors[-1].message if errors else (
             run_summary.message if run_summary else "Unknown error"
         )
-        yield _error_html(msg), *_clear_confirm(), None, {}
+        yield _error_html(msg), *_clear_confirm(), None, {}, *_lock_primary_buttons(locked=False)
         return
 
-    confirm_panel, confirm_text, confirm_buttons = _show_confirm(recipient)
+    ctx["thread_id"] = thread_id
+    confirm_panel, confirm_text, confirm_yes_update, confirm_no_update = _show_confirm(recipient)
+    start_unlock, reset_unlock = _lock_primary_buttons(locked=False)
     yield (
-        _result_from_state(final, ctx),
+        _result_from_state(final, ctx, email_pending=True),
         confirm_panel,
         confirm_text,
-        confirm_buttons,
-        final,
+        confirm_yes_update,
+        confirm_no_update,
+        thread_id,
         ctx,
+        start_unlock,
+        reset_unlock,
     )
 
 
-async def _confirm_send_email(pending_state: dict | None, ctx: dict):
-    """User confirmed — show sending state, then deliver the prepared email."""
-    if not pending_state:
-        yield _error_html("No analysis to send."), *_clear_confirm(), None, {}
+async def _confirm_send_email(pending_thread_id: str | None, ctx: dict):
+    """User confirmed — show sending state, then resume the graph to send email."""
+    if not pending_thread_id:
+        yield _error_html("No analysis to send."), *_clear_confirm(), None, {}, *_lock_primary_buttons(locked=False)
         return
 
+    config = run_config(pending_thread_id)
+
+    try:
+        await assert_resumable(agent_app, config)
+    except StaleCheckpointError:
+        yield (
+            _error_html("This analysis session is outdated — please run a new analysis."),
+            *_clear_confirm(),
+            None,
+            ctx,
+            *_lock_primary_buttons(locked=False),
+        )
+        return
+
+    snapshot = await agent_app.aget_state(config)
+    preview_state = dict(snapshot.values)
+    start_lock, reset_lock = _lock_primary_buttons(locked=True)
     yield (
-        _result_from_state(pending_state, ctx),
+        _result_from_state(preview_state, ctx, email_pending=True),
         *_show_sending(),
-        pending_state,
+        pending_thread_id,
         ctx,
+        start_lock,
+        reset_lock,
     )
 
-    from bestock_agent.nodes.send_email import send_email
-
-    state = dict(pending_state)
-    state["skip_email"] = False
-    send_result = await send_email(state)
-    merged = {**pending_state, **send_result}
+    await agent_app.ainvoke(Command(resume=True), config=config)
+    final_snapshot = await agent_app.aget_state(config)
+    merged = dict(final_snapshot.values)
 
     yield (
         _result_from_state(merged, ctx),
         *_clear_confirm(),
         None,
         ctx,
+        *_lock_primary_buttons(locked=False),
     )
 
 
-async def _cancel_send_email(pending_state: dict | None, ctx: dict):
+async def _cancel_send_email(pending_thread_id: str | None, ctx: dict):
     """User declined — keep results but do not send email."""
-    if not pending_state:
-        return "", *_clear_confirm(), None, {}
+    if not pending_thread_id:
+        return "", *_clear_confirm(), None, {}, *_lock_primary_buttons(locked=False)
+
+    config = run_config(pending_thread_id)
+    snapshot = await agent_app.aget_state(config)
+    final = dict(snapshot.values)
 
     return (
-        _result_from_state(pending_state, ctx, email_cancelled=True),
+        _result_from_state(final, ctx, email_cancelled=True, email_pending=True),
         *_clear_confirm(),
         None,
         ctx,
+        *_lock_primary_buttons(locked=False),
     )
 
 
@@ -511,16 +576,16 @@ def _toggle_advanced(checked: bool):
 def _reset(default_days: int):
     return (
         "",       # recipient_input
-        False,    # adv_toggle
+        gr.update(value=False),    # adv_toggle
         default_days,   # lookback_days
         False,    # enable_sentiment
         False,    # enable_index
         False,    # enable_volatility
-        gr.update(visible=False),   # adv_panel
         "",       # status_panel
         *_clear_confirm(),
-        None,     # pending_state
+        None,     # pending_thread_id
         {},       # ui_context
+        *_lock_primary_buttons(locked=False),
     )
 
 
@@ -603,14 +668,14 @@ def build_ui() -> gr.Blocks:
             status_panel = gr.HTML(value="", elem_id="bs-status-panel")
 
         # ── Email confirmation (shown after analysis completes) ───────────────
-        pending_state = gr.State(None)
+        pending_thread_id = gr.State(None)
         ui_context = gr.State({})
 
         with gr.Column(visible=False, elem_id="bs-confirm-panel") as confirm_panel:
             confirm_text = gr.Markdown("")
-            with gr.Row() as confirm_buttons:
-                confirm_yes = gr.Button("Yes", variant="primary")
-                confirm_no = gr.Button("No", variant="secondary")
+            with gr.Row():
+                confirm_yes = gr.Button("Yes", variant="primary", visible=False)
+                confirm_no = gr.Button("No", variant="secondary", visible=False)
 
         # ── Instructions ──────────────────────────────────────────────────────
         with gr.Group(elem_classes="bs-instructions"):
@@ -634,37 +699,46 @@ def build_ui() -> gr.Blocks:
                 status_panel,
                 confirm_panel,
                 confirm_text,
-                confirm_buttons,
-                pending_state,
+                confirm_yes,
+                confirm_no,
+                pending_thread_id,
                 ui_context,
+                start_btn,
+                reset_btn,
             ],
             show_progress="hidden",
         )
 
         confirm_yes.click(
             fn=_confirm_send_email,
-            inputs=[pending_state, ui_context],
+            inputs=[pending_thread_id, ui_context],
             outputs=[
                 status_panel,
                 confirm_panel,
                 confirm_text,
-                confirm_buttons,
-                pending_state,
+                confirm_yes,
+                confirm_no,
+                pending_thread_id,
                 ui_context,
+                start_btn,
+                reset_btn,
             ],
             show_progress="hidden",
         )
 
         confirm_no.click(
             fn=_cancel_send_email,
-            inputs=[pending_state, ui_context],
+            inputs=[pending_thread_id, ui_context],
             outputs=[
                 status_panel,
                 confirm_panel,
                 confirm_text,
-                confirm_buttons,
-                pending_state,
+                confirm_yes,
+                confirm_no,
+                pending_thread_id,
                 ui_context,
+                start_btn,
+                reset_btn,
             ],
         )
 
@@ -678,14 +752,20 @@ def build_ui() -> gr.Blocks:
                 enable_sentiment,
                 enable_index,
                 enable_volatility,
-                adv_panel,
                 status_panel,
                 confirm_panel,
                 confirm_text,
-                confirm_buttons,
-                pending_state,
+                confirm_yes,
+                confirm_no,
+                pending_thread_id,
                 ui_context,
+                start_btn,
+                reset_btn,
             ],
+        ).then(
+            fn=_toggle_advanced,
+            inputs=[adv_toggle],
+            outputs=[adv_panel],
         )
 
     return demo

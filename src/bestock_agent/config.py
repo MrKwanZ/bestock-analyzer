@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     advanced_analysis_enabled: bool = False
     rate_limit_backoff_seconds: int = 20
 
+    # ── Checkpointing ───────────────────────────────────────────────────────────
+    checkpoint_enabled: bool = True
+    checkpoint_db_path: Path = _PROJECT_ROOT / ".checkpoints" / "bestock.db"
+
     @field_validator("default_lookback_days")
     @classmethod
     def _validate_lookback(cls, v: int) -> int:

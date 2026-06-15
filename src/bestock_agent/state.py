@@ -20,6 +20,8 @@ from bestock_agent.schemas import (
     TrendAnalysis,
 )
 
+STATE_SCHEMA_VERSION = 1
+
 
 class BestockState(TypedDict):
     # ── User inputs ───────────────────────────────────────────────────────────
@@ -29,6 +31,7 @@ class BestockState(TypedDict):
     advanced_analysis_enabled: bool   # enables sentiment / index / volatility nodes
     enable_volatility: bool           # include volatility metrics in the email report
     skip_email: bool                  # when True, analysis completes without sending email
+    state_schema_version: int         # checkpoint schema version for migration safety
 
     # ── Fetched market data ───────────────────────────────────────────────────
     top_gainer: TopGainer | None
@@ -72,6 +75,7 @@ def initial_state(
         advanced_analysis_enabled=advanced_analysis_enabled,
         enable_volatility=enable_volatility,
         skip_email=skip_email,
+        state_schema_version=STATE_SCHEMA_VERSION,
         top_gainer=None,
         price_history=[],
         trend_analysis=None,

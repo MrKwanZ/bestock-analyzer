@@ -2,6 +2,9 @@
 .langgraph_api/
 .langgraph/
 
+# LangGraph SQLite checkpoints
+.checkpoints/
+
 # LangSmith / LangChain local tracing and cache exports
 .langchain_cache/
 .langsmith_cache/

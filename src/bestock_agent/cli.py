@@ -7,6 +7,7 @@ import asyncio
 import sys
 from datetime import date
 
+from bestock_agent.checkpoint import make_thread_id, prepare_invoke_state, run_config
 from bestock_agent.config import get_settings
 from bestock_agent.graph import app
 from bestock_agent.services.analysis import format_price_table
@@ -59,8 +60,13 @@ async def run_agent(
     )
     state["active_financial_provider"] = provider
 
+    thread_id = make_thread_id("cli")
+    config = run_config(thread_id)
+    state = await prepare_invoke_state(app, config, state)
+
+    print(f"    Thread   : {thread_id}")
     print("🔍  Fetching top NASDAQ gainer …")
-    final = await app.ainvoke(state)
+    final = await app.ainvoke(state, config=config)
 
     run_summary = final.get("run_summary")
 

@@ -19,20 +19,6 @@ async def send_email(state: BestockState) -> dict:
     payload = state["email_payload"]
     gainer = state["top_gainer"]
 
-    if state.get("skip_email"):
-        log.info("email_deferred", recipient=state.get("recipient_email", ""))
-        run_summary = RunSummary(
-            success=True,
-            stock_symbol=gainer.symbol if gainer else None,
-            stock_name=gainer.name if gainer else None,
-            change_pct=gainer.change_pct if gainer else None,
-            email_sent=False,
-            email_recipient=state.get("recipient_email"),
-            charts_generated=len(state.get("chart_artifacts", [])),
-            message="Analysis complete — awaiting email confirmation.",
-        )
-        return {"run_summary": run_summary}
-
     if payload is None:
         error = AgentError(
             error_type=ErrorType.VALIDATION_ERROR,

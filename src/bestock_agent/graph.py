@@ -33,8 +33,13 @@ Graph topology
                                END
 """
 
-from langgraph.graph import END, START, StateGraph
+from __future__ import annotations
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+
+from bestock_agent.checkpoint import get_shared_checkpointer
 from bestock_agent.nodes.analyze_trend import analyze_trend
 from bestock_agent.nodes.build_charts import build_charts
 from bestock_agent.nodes.compare_with_indices import compare_with_indices
@@ -242,5 +247,18 @@ def build_graph() -> StateGraph:
     return graph
 
 
-# Pre-compiled graph instance for use by CLI, Gradio UI, and tests.
-app = build_graph().compile()
+def compile_app(
+    *,
+    checkpointer: BaseCheckpointSaver | None = None,
+    interrupt_before_send: bool = False,
+) -> CompiledStateGraph:
+    """Compile the graph with optional checkpointing and email interrupt."""
+    saver = checkpointer if checkpointer is not None else get_shared_checkpointer()
+    interrupt_before = [_NODE_SEND_EMAIL] if interrupt_before_send else None
+    return build_graph().compile(checkpointer=saver, interrupt_before=interrupt_before)
+
+
+# Pre-compiled graph instances for CLI, Gradio UI, and tests.
+_checkpointer = get_shared_checkpointer()
+app = compile_app(checkpointer=_checkpointer, interrupt_before_send=False)
+app_with_interrupt = compile_app(checkpointer=_checkpointer, interrupt_before_send=True)

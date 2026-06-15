@@ -27,6 +27,8 @@ dependencies = [
     "gradio>=4.36",
     # Email
     "aiosmtplib>=3.0",
+    "langgraph-checkpoint-sqlite>=3.1.0",
+    "aiosqlite>=0.22.1",
 ]
 
 [project.scripts]
