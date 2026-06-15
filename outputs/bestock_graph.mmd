@@ -4,6 +4,8 @@ config:
     curve: linear
 ---
 graph TD;
+	%% Checkpointing: state persisted to SQLite after every node (.checkpoints/bestock.db). Gradio uses interrupt_before send_email.
+
 	__start__([<p>__start__</p>]):::first
 	fetch_top_gainer(fetch_top_gainer)
 	fetch_price_history(fetch_price_history)
@@ -12,7 +14,7 @@ graph TD;
 	compare_with_indices(compare_with_indices)
 	build_charts(build_charts)
 	compose_report(compose_report)
-	send_email(send_email)
+	send_email("send_email<br/>(Gradio interrupt)"):::hitl
 	error_handler(error_handler)
 	__end__([<p>__end__</p>]):::last
 	__start__ --> fetch_top_gainer;
@@ -36,4 +38,5 @@ graph TD;
 	send_email -.-> error_handler;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
+	classDef hitl fill:#dbeafe,stroke:#2563eb,stroke-width:2px
 	classDef last fill:#bfb6fc

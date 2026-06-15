@@ -6,7 +6,6 @@ A LangChain + LangGraph agent that automatically identifies the best-performing 
 
 ## Features
 
-
 | Feature                          | Details                                                                                                                     |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | **Top gainer detection**         | Scans the NASDAQ market daily with filters: price ≥ $10, volume ≥ 500 K, gain ≥ 5 %, symbol ≤ 4 chars, relative volume ≥ 2× |
@@ -17,11 +16,11 @@ A LangChain + LangGraph agent that automatically identifies the best-performing 
 | **Buy / Hold / Sell suggestion** | LLM-generated (or rule-based fallback) when Advanced Settings is on                                                         |
 | **Charts**                       | Matplotlib PNG: price trend, daily changes, index comparison, sentiment gauge — attached to the email                       |
 | **Email delivery**               | SMTP (Gmail-compatible); HTML + plain-text multipart; chart attachments                                                     |
-| **Gradio UI**                    | Web app at `http://localhost:7860`                                                                                          |
+| **Gradio UI**                    | Web app at `http://localhost:7860` with human-in-the-loop email confirmation                                                |
 | **CLI**                          | `bestock` command for scripted / CI runs                                                                                    |
+| **Checkpoint persistence**       | SQLite-backed LangGraph checkpoints; state saved after every node; schema-version safe resume                               |
 | **Observability**                | Structured logging, LangSmith tracing (optional)                                                                            |
 | **Fallback chain**               | 20s same-provider backoff on rate limits, then Alpha Vantage → yfinance for price data; Brave → SerpAPI for news            |
-
 
 ---
 
@@ -33,26 +32,32 @@ sleekflow-assignment/
 ├── pyproject.toml          # dependency manifest + entry points
 ├── .env                    # secrets — never commit
 ├── .env.example            # template (copy to .env)
+├── .checkpoints/           # SQLite LangGraph checkpoint DB (gitignored)
 ├── outputs/
+│   ├── bestock_graph.mmd   # Mermaid source for the graph diagram
+│   ├── bestock_graph.png   # exported graph diagram
 │   ├── charts/             # generated PNG charts
 │   └── reports/            # (reserved for future text exports)
 ├── src/bestock_agent/
 │   ├── __init__.py         # LangSmith tracing activation
 │   ├── app.py              # Gradio UI (launch module)
+│   ├── checkpoint.py       # SQLite checkpointer + thread IDs + schema gate
 │   ├── cli.py              # CLI entry point
 │   ├── config.py           # pydantic-settings Settings
-│   ├── graph.py            # LangGraph StateGraph assembly
+│   ├── export_graph.py     # bestock-graph — export Mermaid + PNG
+│   ├── graph.py            # LangGraph StateGraph assembly + compile_app()
 │   ├── logging.py          # structured BestockLogger
 │   ├── schemas.py          # Pydantic data models
-│   ├── state.py            # BestockState TypedDict + initial_state()
+│   ├── state.py            # BestockState TypedDict + STATE_SCHEMA_VERSION
+│   ├── state_migration.py  # checkpoint hydration + stale-version rejection
 │   ├── chains/
-│   │   ├── query_refinement_chain.py   # Phase 7: refine sparse news queries
+│   │   ├── query_refinement_chain.py   # refine sparse news queries
 │   │   ├── report_chain.py             # LLM email report composition
 │   │   └── sentiment_chain.py          # LLM sentiment classification
 │   ├── nodes/              # LangGraph nodes (one file per node)
 │   ├── providers/          # Alpha Vantage, yfinance, Brave, SerpAPI adapters
 │   └── services/           # Pure-Python analysis, validation, charts, email
-└── tests/                  # pytest test suite (105 tests)
+└── tests/                  # pytest test suite (132 tests)
 ```
 
 ---
@@ -60,29 +65,44 @@ sleekflow-assignment/
 ## Architecture Overview
 
 ```
-   Finnhub    ─┐                                  ┌─ Brave Search  ─┐
-               │ fetch_top_gainer                 │                 │
-yfinance (fb) ─┘      │                           │  SerpAPI (fb)  ─┘
-                      ▼                            ▼
-              fetch_price_history        fetch_news_and_sentiment
-                      │                 (query refinement + LLM)
-                      ▼                            │
-               analyze_trend ─── advanced? ────────┘
-                      │                            │
-               build_charts ◄──────────── compare_with_indices
-                      │
-               compose_report  (LLM or template fallback)
-                      │
-               send_email (SMTP, chart attachments)
-                      │
-                     END ─── error_handler (retry / fallback)
+  Alpha Vantage ─┐                                  ┌─ Brave Search  ─┐
+                 │ fetch_top_gainer                 │                 │
+  yfinance (fb) ─┘      │                           │  SerpAPI (fb)  ─┘
+                        ▼                            ▼
+                fetch_price_history        fetch_news_and_sentiment
+                        │                 (query refinement + LLM)
+                        ▼                            │
+                 analyze_trend ─── advanced? ───────┘
+                        │                            │
+                 build_charts ◄──────────── compare_with_indices
+                        │
+                 compose_report  (LLM or template fallback)
+                        │
+                 send_email ◄── Gradio: interrupt_before (Yes/No confirm)
+                        │      CLI: runs straight through
+                        ▼
+                       END ─── error_handler (retry / fallback)
+
+  Checkpoint layer (SQLite .checkpoints/bestock.db)
+  ─────────────────────────────────────────────────
+  State persisted after every node via AsyncSqliteSaver + JsonPlusSerializer.
+  Each run gets a versioned thread ID (e.g. v1-ui-abc123).
+  Gradio resumes the graph with Command(resume=True) after email confirmation.
 ```
 
 ---
 
 ## Architecture Diagram
 
+The diagram below shows the LangGraph node topology. The **send_email** node is highlighted — the Gradio UI pauses there (`interrupt_before`) so you can review results and confirm before SMTP delivery. The CLI runs through without pausing.
+
 ![Architecture Diagram](outputs/bestock_graph.png)
+
+Regenerate after graph changes:
+
+```bash
+bestock-graph
+```
 
 ---
 
@@ -126,7 +146,6 @@ Copy `.env.example` to `.env` and fill in all `<YOUR-*>` placeholders:
 cp .env.example .env
 ```
 
-
 | Variable                     | Required | Description                                                                         |
 | ---------------------------- | -------- | ----------------------------------------------------------------------------------- |
 | `OPENAI_API_KEY`             | Yes      | OpenAI key for report, sentiment, and query-refinement chains                       |
@@ -145,8 +164,12 @@ cp .env.example .env
 | `LANGSMITH_API_KEY`          | optional | LangSmith API key                                                                   |
 | `LANGSMITH_PROJECT`          | optional | Project name (default: `bestock-agent`)                                             |
 
-
 > **Gmail App Password** — Regular passwords will not work with SMTP. Generate a 16-character app password at [myaccount.google.com → Security → 2-Step Verification → App passwords](https://myaccount.google.com/apppasswords).
+
+Checkpoint settings use defaults and do not require `.env` entries:
+
+- `checkpoint_enabled` — `true` (disable to use in-memory checkpoints only)
+- `checkpoint_db_path` — `.checkpoints/bestock.db`
 
 ---
 
@@ -162,15 +185,22 @@ bestock-ui
 
 Open [http://localhost:7860](http://localhost:7860) in your browser.
 
-**UI controls:**
+**UI flow:**
 
 1. Enter a valid **Email Recipient** address.
-2. Click **▶ Start** for a quick run (5-day lookback, no advanced analysis).
-3. Tick **Advanced Settings** to reveal:
-  - **Lookback Days** (3 – 30, required when Advanced Settings is on)
-  - **Sentiment Analysis** — classifies market mood from recent news
-  - **S&P 500 Comparison** — compares stock vs index over the lookback period
-  - **Volatility** — adds daily standard-deviation metric to the report
+2. Click **▶ Start** — analysis runs; Start/Reset/Yes/No buttons are disabled while work is in progress.
+3. Review the results panel when analysis completes.
+4. Click **Yes** to send the report via email, or **No** to keep results without sending.
+5. Click **↺ Reset** to clear inputs and start over.
+
+**Advanced Settings** (optional):
+
+- **Lookback Days** (3 – 30, required when Advanced Settings is on)
+- **Sentiment Analysis** — classifies market mood from recent news
+- **S&P 500 Comparison** — compares stock vs index over the lookback period
+- **Volatility** — adds daily standard-deviation metric to the report
+
+The UI uses LangGraph checkpointing with `interrupt_before send_email`. Analysis state is persisted to SQLite; confirming email resumes the graph via the stored thread ID.
 
 ### Option B — CLI
 
@@ -181,6 +211,8 @@ bestock --advanced                        # enables all advanced analysis
 bestock --provider yfinance               # force yfinance provider
 bestock --date 2026-06-10                 # analyse a specific past date
 ```
+
+The CLI runs the full pipeline including email delivery (no confirmation step). Each run prints a versioned checkpoint `thread_id` and writes state to `.checkpoints/bestock.db`.
 
 Full options:
 
@@ -206,8 +238,8 @@ pytest
 # Verbose with test names
 pytest -v
 
-# A specific test file
-pytest tests/test_happy_flow.py -v
+# Checkpoint / persistence tests
+pytest tests/test_checkpoint.py -v
 
 # With log output (useful for debugging)
 pytest -s --log-cli-level=INFO
@@ -215,18 +247,17 @@ pytest -s --log-cli-level=INFO
 
 ### Test coverage summary
 
-
 | File                       | What it covers                                                                                         |
 | -------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `test_analysis.py`         | Trend calculations, volatility, price table formatting                                                 |
 | `test_validation.py`       | All validation rules (email, date, lookback, price bars, top gainer)                                   |
-| `test_fallback.py`         | Provider switching, retry logic, `decide_fallback`, `failing_node`                                     |
+| `test_fallback.py`         | Provider switching, retry logic, `decide_fallback`, `failing_node`                                       |
 | `test_graph_routing.py`    | Node routing functions, `error_handler` node behaviour                                                 |
 | `test_report_payload.py`   | Report composition, disclaimer, conditional volatility/suggestion                                      |
 | `test_query_refinement.py` | LLM and rule-based query refinement                                                                    |
 | `test_logging.py`          | Structured logger helpers and timer                                                                    |
-| `test_happy_flow.py`       | Full graph happy paths (basic + advanced), email delivery flag, fallback recovery, UI input validation |
-
+| `test_checkpoint.py`       | SQLite persistence, interrupt/resume, thread isolation, schema versioning, serde allowlist             |
+| `test_happy_flow.py`       | Full graph happy paths, email delivery, fallback recovery, UI helpers (confirm panel, button locking)  |
 
 ---
 
@@ -234,12 +265,13 @@ pytest -s --log-cli-level=INFO
 
 After a successful run:
 
-- **Email** delivered to the recipient with subject `BeStock's Top Performing NASDAQ Stock Analysis Report on <SYMBOL> (<DATE>)`
+- **Email** delivered to the recipient with subject `BeStock's Top Performing NASDAQ Stock Analysis Report on <SYMBOL>`
 - **Charts** saved to `outputs/charts/`:
   - `<symbol>_price_<date>.png` — closing price trend
   - `<symbol>_change_<date>.png` — daily percentage change bars
   - `<symbol>_vs_sp500_<date>.png` — stock vs S&P 500 (advanced only)
   - `<symbol>_sentiment_<date>.png` — sentiment gauge (advanced only)
+- **Checkpoints** saved to `.checkpoints/bestock.db` (one row per graph step per thread)
 
 The email contains:
 
